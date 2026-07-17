@@ -1,6 +1,6 @@
 import { serve, type ServerType } from '@hono/node-server';
 import { Hono } from 'hono';
-import { readRepoBase, writeRepoBase } from './config.js';
+import { readRepoBase, readRepoMode, writeRepoBase, writeRepoMode, type ReviewMode } from './config.js';
 import type { DifitInstance } from './difit-manager.js';
 import { detectBaseBranch, summarizeWorktree, type WorktreeSummary } from './git-summary.js';
 import { runGit, tryGit } from './git.js';
@@ -43,6 +43,8 @@ export interface WorktreeReview {
 export interface ReviewAggregate {
   repo: string;
   generatedAt: string;
+  /** 'pr': diff completo del PR; 'wip': solo cambios sin commitear. */
+  mode: ReviewMode;
   worktrees: WorktreeReview[];
 }
 
@@ -53,7 +55,13 @@ function resolveBaseOverride(ctx: HubContext): string | undefined {
   return ctx.base ?? readRepoBase(ctx.repoRoot) ?? undefined;
 }
 
-async function aggregate(ctx: HubContext, includeDiff: boolean): Promise<ReviewAggregate> {
+/** Modo efectivo: query ?mode=pr|wip → config guardada → 'pr'. */
+function resolveMode(ctx: HubContext, queryMode?: string): ReviewMode {
+  if (queryMode === 'pr' || queryMode === 'wip') return queryMode;
+  return readRepoMode(ctx.repoRoot);
+}
+
+async function aggregate(ctx: HubContext, includeDiff: boolean, mode: ReviewMode): Promise<ReviewAggregate> {
   const all = await listWorktrees(ctx.repoRoot);
   const wts = all.filter((w) => !w.bare);
   wts.sort((a, b) => Number(b.isMain) - Number(a.isMain) || (a.branch ?? a.id).localeCompare(b.branch ?? b.id));
@@ -64,6 +72,7 @@ async function aggregate(ctx: HubContext, includeDiff: boolean): Promise<ReviewA
       const { diff, dirty, ...summary } = await summarizeWorktree(wt, {
         base: baseOverride,
         maxDiffBytes: ctx.maxDiffBytes,
+        mode,
       });
       return {
         id: wt.id,
@@ -81,19 +90,29 @@ async function aggregate(ctx: HubContext, includeDiff: boolean): Promise<ReviewA
     }),
   );
 
-  return { repo: ctx.repoRoot, generatedAt: new Date().toISOString(), worktrees };
+  return { repo: ctx.repoRoot, generatedAt: new Date().toISOString(), mode, worktrees };
 }
 
 export function createHubApp(ctx: HubContext): HubApp {
   const app = new Hono();
 
   app.get('/', async (c) => {
-    const data = await aggregate(ctx, false);
+    const mode = resolveMode(ctx, c.req.query('mode'));
+    const data = await aggregate(ctx, false, mode);
     const branches = (await runGit(['branch', '--format=%(refname:short)'], ctx.repoRoot))
       .split('\n')
       .filter(Boolean);
     const effectiveBase = resolveBaseOverride(ctx) ?? (await detectBaseBranch(ctx.repoRoot));
-    return c.html(renderDashboardHtml(data, { branches, effectiveBase, baseLocked: Boolean(ctx.base) }));
+    return c.html(renderDashboardHtml(data, { branches, effectiveBase, baseLocked: Boolean(ctx.base), mode }));
+  });
+
+  app.post('/api/mode', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { mode?: unknown };
+    const mode = body.mode;
+    if (mode !== 'pr' && mode !== 'wip') return c.json({ error: 'mode debe ser "pr" o "wip"' }, 400);
+    writeRepoMode(ctx.repoRoot, mode);
+    await ctx.difit.stopAll(); // las instancias vivas quedaron con el modo viejo
+    return c.json({ ok: true, mode });
   });
 
   app.post('/api/base', async (c) => {
@@ -110,12 +129,16 @@ export function createHubApp(ctx: HubContext): HubApp {
     return c.json({ ok: true, base });
   });
 
-  app.get('/api/worktrees.json', async (c) => c.json(await aggregate(ctx, false)));
+  app.get('/api/worktrees.json', async (c) =>
+    c.json(await aggregate(ctx, false, resolveMode(ctx, c.req.query('mode')))),
+  );
 
-  app.get('/api/review.json', async (c) => c.json(await aggregate(ctx, true)));
+  app.get('/api/review.json', async (c) =>
+    c.json(await aggregate(ctx, true, resolveMode(ctx, c.req.query('mode')))),
+  );
 
   app.get('/review.md', async (c) => {
-    const data = await aggregate(ctx, true);
+    const data = await aggregate(ctx, true, resolveMode(ctx, c.req.query('mode')));
     return c.text(renderReviewMarkdown(data), 200, { 'content-type': 'text/markdown; charset=utf-8' });
   });
 
@@ -124,7 +147,9 @@ export function createHubApp(ctx: HubContext): HubApp {
     const wts = await listWorktrees(ctx.repoRoot);
     const wt = wts.find((w) => w.id === id && !w.bare);
     if (!wt) return c.text(`worktree desconocido: ${id}`, 404);
-    const base = await detectBaseBranch(wt.path, resolveBaseOverride(ctx));
+    const mode = resolveMode(ctx, c.req.query('mode'));
+    // wip → sin base: difit diffea working tree contra HEAD (solo sin commitear)
+    const base = mode === 'wip' ? null : await detectBaseBranch(wt.path, resolveBaseOverride(ctx));
     const inst = await ctx.difit.ensure(wt, base);
     return c.redirect(inst.url, 302);
   });

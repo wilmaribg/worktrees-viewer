@@ -156,3 +156,74 @@ describe('rama base configurable', () => {
     expect(body.worktrees.find((w) => w.branch === 'feat-a')!.summary.baseBranch).toBe('main');
   });
 });
+
+interface WtLight {
+  id: string;
+  branch: string | null;
+  summary: { files: Array<{ path: string }> };
+}
+
+describe('modo PR / solo sin commitear', () => {
+  beforeAll(async () => {
+    // el bloque anterior dejó la base en feat-a; este bloque asume main
+    await app.request('/api/base', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ base: 'main' }),
+    });
+  });
+
+  test('el dashboard muestra el toggle con "pr" activo por defecto', async () => {
+    const html = await (await app.request('/')).text();
+    expect(html).toContain('id="mode-toggle"');
+    expect(html).toMatch(/value="pr"[^>]*checked/);
+  });
+
+  test('POST /api/mode rechaza modos inválidos', async () => {
+    const res = await app.request('/api/mode', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'otra-cosa' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test('POST /api/mode wip persiste, apaga difit y cambia los resúmenes', async () => {
+    stopAllCalls = 0;
+    const res = await app.request('/api/mode', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'wip' }),
+    });
+    expect(res.status).toBe(200);
+    expect(stopAllCalls).toBe(1);
+
+    const body = (await (await app.request('/api/worktrees.json')).json()) as { worktrees: WtLight[] };
+    // feat-a: todo committeado → 0 archivos en wip
+    expect(body.worktrees.find((w) => w.branch === 'feat-a')!.summary.files).toEqual([]);
+    // feat-b: WIP + untracked
+    const featB = body.worktrees.find((w) => w.branch === 'feat-b')!;
+    expect(featB.summary.files.map((f) => f.path).sort()).toEqual(['README.md', 'nuevo.js']);
+
+    const html = await (await app.request('/')).text();
+    expect(html).toMatch(/value="wip"[^>]*checked/);
+  });
+
+  test('en modo wip, abrir difit no pasa base (diff contra HEAD)', async () => {
+    const list = (await (await app.request('/api/worktrees.json')).json()) as { worktrees: WtLight[] };
+    const featB = list.worktrees.find((w) => w.branch === 'feat-b')!;
+    ensured.length = 0;
+    const res = await app.request(`/wt/${featB.id}/open`, { redirect: 'manual' });
+    expect(res.status).toBe(302);
+    expect(ensured[0]?.base).toBeNull();
+  });
+
+  test('?mode=pr fuerza el modo PR aunque la config diga wip', async () => {
+    const body = (await (await app.request('/api/worktrees.json?mode=pr')).json()) as { worktrees: WtLight[] };
+    const featB = body.worktrees.find((w) => w.branch === 'feat-b')!;
+    // en PR vuelve a incluir lo committeado (README) y sigue el untracked
+    expect(featB.summary.files.length).toBeGreaterThanOrEqual(2);
+    const featA = body.worktrees.find((w) => w.branch === 'feat-a')!;
+    expect(featA.summary.files.map((f) => f.path)).toEqual(['lib.js']);
+  });
+});
