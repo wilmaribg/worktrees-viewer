@@ -6,7 +6,7 @@ import type { Worktree } from './worktrees.js';
 export interface DifitInstance {
   url: string;
   port: number;
-  /** pid del servidor difit desacoplado (el que hay que matar). */
+  /** pid del proceso difit (hijo directo nuestro). */
   pid: number;
 }
 
@@ -22,8 +22,12 @@ const SPAWN_TIMEOUT_MS = 20_000;
 
 /**
  * Lanza y trackea una instancia de difit por worktree (spawn perezoso).
- * difit --background imprime una línea JSON {port,url,pid} y deja el
- * servidor corriendo desacoplado con --keep-alive; ese pid es el que matamos.
+ *
+ * No usamos `difit --background`: su contrato JSON se rompe cuando el worktree
+ * tiene archivos untracked (difit loguea "✅ Files added with --intent-to-add"
+ * antes del JSON y el padre background solo reenvía la primera línea). En su
+ * lugar corremos difit como hijo directo con --keep-alive y parseamos la URL
+ * de su salida, escaneando todas las líneas.
  */
 export class DifitManager {
   private readonly instances = new Map<string, DifitInstance>();
@@ -47,7 +51,7 @@ export class DifitManager {
       '.',
       ...(baseBranch ? [baseBranch, '--merge-base'] : []),
       '--include-untracked',
-      '--background',
+      '--keep-alive',
       '--no-open',
       '--port',
       String(port),
@@ -95,6 +99,8 @@ function killQuiet(pid: number): void {
   }
 }
 
+const URL_RE = /https?:\/\/[^\s]+:(\d+)/;
+
 function spawnDifit(args: string[], cwd: string): Promise<DifitInstance> {
   const bin = resolveDifitBin();
   return new Promise((resolve, reject) => {
@@ -119,19 +125,13 @@ function spawnDifit(args: string[], cwd: string): Promise<DifitInstance> {
 
     child.stdout.on('data', (chunk: Buffer) => {
       stdout += chunk.toString();
-      // --background imprime una única línea JSON: {"port":N,"url":"...","pid":N}
-      for (const line of stdout.split('\n')) {
-        if (!line.trim().startsWith('{')) continue;
-        try {
-          const info = JSON.parse(line) as { port: number; url: string; pid: number };
-          if (info.url && info.pid) {
-            child.unref();
-            finish(() => resolve({ url: info.url, port: info.port, pid: info.pid }));
-            return;
-          }
-        } catch {
-          // línea incompleta; seguimos acumulando
-        }
+      // difit anuncia "🚀 difit server started on http://localhost:PORT",
+      // posiblemente precedido de líneas informativas (p. ej. untracked).
+      const match = stdout.match(URL_RE);
+      if (match && child.pid) {
+        const url = match[0];
+        child.unref();
+        finish(() => resolve({ url, port: Number(match[1]), pid: child.pid! }));
       }
     });
     child.stderr.on('data', (chunk: Buffer) => {
@@ -139,9 +139,9 @@ function spawnDifit(args: string[], cwd: string): Promise<DifitInstance> {
     });
     child.on('error', (err) => finish(() => reject(err)));
     child.on('exit', (code) => {
-      if (code !== 0) {
-        finish(() => reject(new Error(`difit terminó con código ${code}: ${stderr.slice(0, 500)}`)));
-      }
+      finish(() =>
+        reject(new Error(`difit terminó antes de anunciar su URL (código ${code}): ${stderr.slice(0, 500)}`)),
+      );
     });
   });
 }

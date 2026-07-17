@@ -105,7 +105,12 @@ export function createHubApp(ctx: HubContext): HubApp {
   return app;
 }
 
-export function startHub(ctx: HubContext, opts: { port: number; host: string }): ServerType {
+export function startHub(
+  ctx: HubContext,
+  opts: { port: number; host: string; onListen?: (info: { port: number; address: string }) => void },
+): ServerType {
   const app = createHubApp(ctx);
-  return serve({ fetch: app.fetch, port: opts.port, hostname: opts.host });
+  return serve({ fetch: app.fetch, port: opts.port, hostname: opts.host }, (info) => {
+    opts.onListen?.({ port: info.port, address: info.address });
+  });
 }
