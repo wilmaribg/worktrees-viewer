@@ -83,3 +83,23 @@ describe('summarizeWorktree', () => {
     expect(Buffer.byteLength(s.diff, 'utf8')).toBeLessThanOrEqual(50);
   });
 });
+
+describe('summarizeWorktree en modo wip (solo sin commitear)', () => {
+  test('wt-b: solo el WIP y los untracked, sin lo ya committeado', async () => {
+    const s = await summarizeWorktree(wt(fx.wtB), { mode: 'wip' });
+    const paths = s.files.map((f) => f.path).sort();
+    expect(paths).toEqual(['README.md', 'nuevo.js']);
+    expect(s.diff).toContain('+WIP sin commitear');
+    expect(s.diff).not.toContain('+Docs mejoradas'); // eso ya está committeado
+    expect(s.dirty).toBe(true);
+    // ahead/behind siguen siendo respecto a la base (info de la rama)
+    expect(s.ahead).toBe(1);
+  });
+
+  test('wt-a: todo committeado → sin cambios en modo wip', async () => {
+    const s = await summarizeWorktree(wt(fx.wtA), { mode: 'wip' });
+    expect(s.files).toEqual([]);
+    expect(s.diff).toBe('');
+    expect(s.ahead).toBe(1); // la rama sigue ahead de la base
+  });
+});

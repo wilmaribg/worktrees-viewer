@@ -35,6 +35,11 @@ export interface SummaryOptions {
   base?: string;
   /** Tope de bytes para `diff` (default 2 MB). */
   maxDiffBytes?: number;
+  /**
+   * 'pr' (default): diff del merge-base con la base → working tree.
+   * 'wip': solo cambios sin commitear (HEAD → working tree) + untracked.
+   */
+  mode?: 'pr' | 'wip';
 }
 
 const DEFAULT_MAX_DIFF_BYTES = 2 * 1024 * 1024;
@@ -70,23 +75,27 @@ const EMPTY_SUMMARY: Omit<WorktreeSummary, 'baseBranch' | 'mergeBase'> = {
 export async function summarizeWorktree(wt: Worktree, opts: SummaryOptions): Promise<WorktreeSummary> {
   const cwd = wt.path;
   const maxDiffBytes = opts.maxDiffBytes ?? DEFAULT_MAX_DIFF_BYTES;
+  const mode = opts.mode ?? 'pr';
 
   const baseBranch = await detectBaseBranch(cwd, opts.base);
   const mergeBase = baseBranch ? await tryGit(['merge-base', baseBranch, 'HEAD'], cwd) : null;
   const status = await runGit(['status', '--porcelain'], cwd);
   const dirty = status.length > 0;
 
-  if (!baseBranch || !mergeBase) {
+  // Referencia contra la que se calculan archivos y diff:
+  // pr → merge-base con la base; wip → HEAD (solo lo sin commitear).
+  const diffRef = mode === 'wip' ? 'HEAD' : mergeBase;
+  if (!diffRef || (mode === 'pr' && !baseBranch)) {
     return { ...EMPTY_SUMMARY, baseBranch: mergeBase ? baseBranch : null, mergeBase, dirty };
   }
 
   const [counts, nameStatus, untrackedOut, diffTracked] = await Promise.all([
-    runGit(['rev-list', '--left-right', '--count', `${baseBranch}...HEAD`], cwd),
-    runGit(['diff', '--name-status', '-M', mergeBase], cwd),
+    baseBranch ? runGit(['rev-list', '--left-right', '--count', `${baseBranch}...HEAD`], cwd) : Promise.resolve(''),
+    runGit(['diff', '--name-status', '-M', diffRef], cwd),
     runGit(['ls-files', '--others', '--exclude-standard'], cwd),
-    runGit(['diff', '-M', mergeBase], cwd),
+    runGit(['diff', '-M', diffRef], cwd),
   ]);
-  const numstat = await runGit(['diff', '--numstat', '-M', mergeBase], cwd);
+  const numstat = await runGit(['diff', '--numstat', '-M', diffRef], cwd);
 
   const [behindStr, aheadStr] = counts.split('\t');
   const behind = Number(behindStr) || 0;

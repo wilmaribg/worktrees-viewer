@@ -1,3 +1,4 @@
+import type { ReviewMode } from './config.js';
 import type { ReviewAggregate, WorktreeReview } from './hub-server.js';
 
 function esc(text: string): string {
@@ -21,6 +22,7 @@ export function renderReviewMarkdown(data: ReviewAggregate): string {
     '',
     `- Repo: \`${data.repo}\``,
     `- Generado: ${data.generatedAt}`,
+    `- Modo: ${data.mode === 'wip' ? 'solo cambios sin commitear' : 'diff completo del PR'}`,
     `- Worktrees: ${data.worktrees.length}`,
     '',
   ];
@@ -95,6 +97,30 @@ export interface DashboardOptions {
   effectiveBase: string | null;
   /** true si la base viene del flag --base (el selector se deshabilita). */
   baseLocked: boolean;
+  /** Modo de review actual. */
+  mode: ReviewMode;
+}
+
+function modeToggleHtml(mode: ReviewMode): string {
+  const radio = (value: ReviewMode, label: string) =>
+    `<label><input type="radio" name="mode" value="${value}"${mode === value ? ' checked' : ''}>${label}</label>`;
+  return `<fieldset id="mode-toggle">
+    ${radio('pr', 'Diff del PR')}
+    ${radio('wip', 'Solo sin commitear')}
+  </fieldset>
+  <script>
+    document.querySelectorAll('#mode-toggle input').forEach((el) => {
+      el.addEventListener('change', async (e) => {
+        const res = await fetch('/api/mode', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ mode: e.target.value }),
+        });
+        if (res.ok) location.reload();
+        else alert((await res.json()).error ?? 'no se pudo cambiar el modo');
+      });
+    });
+  </script>`;
 }
 
 function baseSelectorHtml(opts: DashboardOptions): string {
@@ -139,6 +165,10 @@ export function renderDashboardHtml(data: ReviewAggregate, opts: DashboardOption
   .controls { display: flex; align-items: center; gap: .8rem; }
   .base { font-size: .82rem; color: var(--muted); display: flex; align-items: center; gap: .45rem; }
   .base select { background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 7px; padding: .35rem .5rem; font-size: .82rem; }
+  #mode-toggle { display: flex; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; padding: 0; margin: 0; }
+  #mode-toggle label { font-size: .78rem; color: var(--muted); padding: .38rem .7rem; cursor: pointer; }
+  #mode-toggle label:has(input:checked) { background: var(--accent); color: #fff; }
+  #mode-toggle input { position: absolute; opacity: 0; pointer-events: none; }
   .repo { color: var(--muted); font-size: .85rem; margin: 0 0 1.5rem; overflow-wrap: anywhere; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1rem; }
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: .55rem; }
@@ -164,6 +194,7 @@ export function renderDashboardHtml(data: ReviewAggregate, opts: DashboardOption
   <div class="top">
     <h1>🌳 worktrees-viewer</h1>
     <div class="controls">
+      ${modeToggleHtml(opts.mode)}
       ${baseSelectorHtml(opts)}
       <a class="btn ghost" href="/">Refrescar</a>
     </div>
