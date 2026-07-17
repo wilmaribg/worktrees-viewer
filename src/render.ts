@@ -338,12 +338,9 @@ const CARD_ACTIONS_JS = `
       btn.disabled = true;
       btn.textContent = 'arrancando…';
       const { ok, data } = await postJson('/wt/' + wt + '/run/start');
-      if (!ok) {
-        alert(data?.error ?? 'no se pudo levantar');
-        location.reload();
-        return;
-      }
-      await pollUntilUrl(wt);
+      if (!ok) alert(data?.error ?? 'no se pudo levantar');
+      // recargar ya: la tarjeta pasa al estado "corriendo" (con Detener disponible);
+      // el handler de .esperando sigue sondeando hasta que aparezca la URL.
       location.reload();
     }
 

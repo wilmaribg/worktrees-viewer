@@ -665,6 +665,24 @@ describe('controles del dashboard (run / PR / eliminar)', () => {
     expect(html).toContain('Levantar');
   });
 
+  test('un worktree corriendo sin URL detectada muestra "arrancando…" y Detener', async () => {
+    // estado exacto al que se cae apenas se arranca: el control de Detener debe estar
+    // disponible aunque todavía no se haya detectado la URL del dev server.
+    const id = (
+      (await (await app.request('/api/worktrees.json')).json()) as {
+        worktrees: Array<{ id: string; branch: string | null }>;
+      }
+    ).worktrees.find((w) => w.branch === 'feat-b')!.id;
+    runStatuses.set(id, fakeRunStatus({ url: null }));
+    try {
+      const html = await (await app.request('/')).text();
+      expect(html).toContain('arrancando…');
+      expect(html).toContain(`data-action="stop" data-wt="${id}"`);
+    } finally {
+      runStatuses.delete(id);
+    }
+  });
+
   test('PR y Eliminar aparecen según el tipo de worktree', async () => {
     const html = await (await app.request('/')).text();
     // 5 worktrees: main (sin PR ni eliminar), detached (sin PR), feat-a/b/clean (todo)
