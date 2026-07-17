@@ -22,10 +22,10 @@
   },
   "type": "module",
   "bin": {
-    "wtv": "./dist/cli.js",
-    "worktrees-viewer": "./dist/cli.js"
+    "wtv": "dist/cli.js",
+    "worktrees-viewer": "dist/cli.js"
   },
-  "main": "./dist/index.js",
+  "main": "dist/index.js",
   "files": [
     "dist"
   ],
