@@ -19,3 +19,17 @@ export async function tryGit(args: string[], cwd: string): Promise<string | null
     return null;
   }
 }
+
+/**
+ * Para comandos donde exit 1 significa "hay diferencias" y no error
+ * (git diff --no-index). Devuelve stdout en exit 0 o 1; lanza en el resto.
+ */
+export async function runGitDiffExit1(args: string[], cwd: string): Promise<string> {
+  try {
+    return await runGit(args, cwd);
+  } catch (err) {
+    const e = err as { code?: number; stdout?: string };
+    if (e.code === 1 && typeof e.stdout === 'string') return e.stdout.replace(/\n$/, '');
+    throw err;
+  }
+}
