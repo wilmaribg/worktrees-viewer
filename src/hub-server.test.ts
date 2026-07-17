@@ -874,3 +874,19 @@ describe('dashboard: orden, archivados, fechas y PR', () => {
     expect(html.indexOf(`data-wt="${a}"`)).toBeGreaterThan(html.indexOf(`data-wt="${b}"`));
   });
 });
+
+describe('abrir en VS Code', () => {
+  test('cada tarjeta tiene un link vscode://file a la ruta del worktree', async () => {
+    const list = (await (await app.request('/api/worktrees.json')).json()) as {
+      worktrees: Array<{ branch: string | null; path: string }>;
+    };
+    const featA = list.worktrees.find((w) => w.branch === 'feat-a')!;
+    const expectedHref = 'vscode://file' + featA.path.split('/').map(encodeURIComponent).join('/');
+
+    const html = await (await app.request('/')).text();
+    expect(html).toContain(`href="${expectedHref}"`);
+    expect(html).toContain('VS Code');
+    // un link por worktree (incluido el principal)
+    expect(html.match(/vscode:\/\/file/g)?.length).toBeGreaterThanOrEqual(5);
+  });
+});

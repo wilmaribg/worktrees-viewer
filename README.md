@@ -38,6 +38,10 @@ Cada tarjeta tiene además su **propio campo de comando**: en un monorepo cada p
 
 Así puedes probar los cambios de cada worktree antes de crear el PR. Si levantas varios a la vez, la mayoría de dev servers (vite, quasar, webpack) auto-incrementan el puerto solos.
 
+### Abrir en VS Code
+
+Cada tarjeta tiene un botón **VS Code** que abre ese worktree en el editor (deep link `vscode://file/<ruta>`), por si querés modificar o agregar algo a mano antes de crear el PR. La primera vez el navegador te pedirá permiso para abrir Visual Studio Code.
+
 ### Crear el Pull Request
 
 El botón **Crear PR** pushea la rama (`git push -u origin`) y crea el PR contra tu base configurada con `gh pr create --fill` (título/cuerpo desde los commits). Si el PR ya existe, abre el existente. Requiere [gh CLI](https://cli.github.com) autenticado. Si hay cambios sin commitear te avisa que no van en el PR.
