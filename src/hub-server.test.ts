@@ -1,10 +1,12 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
-import { readRepoBase } from './config.js';
+import { readRepoBase, readRepoRunCommand } from './config.js';
 import type { DifitInstance } from './difit-manager.js';
 import { createHubApp, type HubApp } from './hub-server.js';
+import type { RunStatus } from './run-manager.js';
 import { createFixture, type Fixture } from './test-fixture.js';
 import type { Worktree } from './worktrees.js';
 
@@ -23,8 +25,48 @@ const fakeDifit = {
   liveUrl(): string | null {
     return null;
   },
+  async stop(wtId: string): Promise<void> {
+    difitStopped.push(wtId);
+  },
   async stopAll(): Promise<void> {
     stopAllCalls++;
+  },
+};
+const difitStopped: string[] = [];
+
+const runStarted: Array<{ wt: Worktree; command: string }> = [];
+const runStopped: string[] = [];
+const runStatuses = new Map<string, RunStatus>();
+
+function fakeRunStatus(overrides: Partial<RunStatus> = {}): RunStatus {
+  return {
+    running: true,
+    pid: 4242,
+    url: 'http://localhost:9000/',
+    command: 'npm run dev',
+    startedAt: '2026-01-01T00:00:00.000Z',
+    exitCode: null,
+    logs: 'App corriendo en http://localhost:9000/',
+    ...overrides,
+  };
+}
+
+const fakeRun = {
+  start(wt: Worktree, command: string): RunStatus {
+    runStarted.push({ wt, command });
+    const status = fakeRunStatus({ command });
+    runStatuses.set(wt.id, status);
+    return status;
+  },
+  status(wtId: string): RunStatus | null {
+    return runStatuses.get(wtId) ?? null;
+  },
+  async stop(wtId: string): Promise<void> {
+    runStopped.push(wtId);
+    runStatuses.delete(wtId);
+  },
+  async stopAll(): Promise<void> {
+    runStatuses.clear();
   },
 };
 
@@ -32,7 +74,7 @@ beforeAll(() => {
   tmpConfigHome = fs.mkdtempSync(path.join(os.tmpdir(), 'wtv-hub-config-'));
   process.env['XDG_CONFIG_HOME'] = tmpConfigHome;
   fx = createFixture();
-  app = createHubApp({ repoRoot: fx.repo, difit: fakeDifit });
+  app = createHubApp({ repoRoot: fx.repo, difit: fakeDifit, run: fakeRun });
 });
 
 afterAll(() => {
@@ -149,7 +191,7 @@ describe('rama base configurable', () => {
   });
 
   test('el flag --base tiene precedencia sobre la config guardada', async () => {
-    const flagApp = createHubApp({ repoRoot: fx.repo, base: 'main', difit: fakeDifit });
+    const flagApp = createHubApp({ repoRoot: fx.repo, base: 'main', difit: fakeDifit, run: fakeRun });
     const body = (await (await flagApp.request('/api/worktrees.json')).json()) as {
       worktrees: Array<{ branch: string | null; summary: { baseBranch: string | null } }>;
     };
@@ -225,5 +267,310 @@ describe('modo PR / solo sin commitear', () => {
     expect(featB.summary.files.length).toBeGreaterThanOrEqual(2);
     const featA = body.worktrees.find((w) => w.branch === 'feat-a')!;
     expect(featA.summary.files.map((f) => f.path)).toEqual(['lib.js']);
+  });
+});
+
+describe('levantar el proyecto', () => {
+  async function wtId(branch: string): Promise<string> {
+    const body = (await (await app.request('/api/worktrees.json')).json()) as {
+      worktrees: Array<{ id: string; branch: string | null }>;
+    };
+    return body.worktrees.find((w) => w.branch === branch)!.id;
+  }
+
+  test('POST /api/run-command persiste el comando del repo', async () => {
+    const res = await app.request('/api/run-command', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: 'npm run dev' }),
+    });
+    expect(res.status).toBe(200);
+    expect(readRepoRunCommand(fx.repo)).toBe('npm run dev');
+  });
+
+  test('POST /api/run-command vacío responde 400', async () => {
+    const res = await app.request('/api/run-command', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: '   ' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test('POST /api/run/:id/start lanza el comando configurado', async () => {
+    const id = await wtId('feat-a');
+    runStarted.length = 0;
+    const res = await app.request(`/wt/${id}/run/start`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as RunStatus;
+    expect(body.running).toBe(true);
+    expect(body.url).toBe('http://localhost:9000/');
+    expect(runStarted).toHaveLength(1);
+    expect(runStarted[0]?.wt.branch).toBe('feat-a');
+    expect(runStarted[0]?.command).toBe('npm run dev');
+  });
+
+  test('GET /wt/:id/run devuelve el estado actual', async () => {
+    const id = await wtId('feat-a');
+    const res = await app.request(`/wt/${id}/run`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as RunStatus;
+    expect(body.pid).toBe(4242);
+  });
+
+  test('GET /wt/:id/run sin proceso devuelve null', async () => {
+    const id = await wtId('feat-clean');
+    const res = await app.request(`/wt/${id}/run`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toBeNull();
+  });
+
+  test('GET /wt/:id/run/logs devuelve texto plano', async () => {
+    const id = await wtId('feat-a');
+    const res = await app.request(`/wt/${id}/run/logs`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/plain');
+    expect(await res.text()).toContain('App corriendo');
+  });
+
+  test('POST /wt/:id/run/stop detiene el proceso', async () => {
+    const id = await wtId('feat-a');
+    runStopped.length = 0;
+    const res = await app.request(`/wt/${id}/run/stop`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(runStopped).toEqual([id]);
+  });
+
+  test('start sin comando configurado responde 400', async () => {
+    fs.rmSync(configPathIn(tmpConfigHome), { force: true });
+    const id = await wtId('feat-a');
+    const res = await app.request(`/wt/${id}/run/start`, { method: 'POST' });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('comando');
+  });
+
+  test('start sobre un worktree desconocido responde 404', async () => {
+    const res = await app.request('/wt/no-existe/run/start', { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
+});
+
+function configPathIn(configHome: string): string {
+  return path.join(configHome, 'wtv', 'config.json');
+}
+
+describe('crear pull request', () => {
+  const prCalls: Array<{ wt: Worktree; base: string | null }> = [];
+  let prApp: HubApp;
+
+  beforeAll(() => {
+    prApp = createHubApp({
+      repoRoot: fx.repo,
+      difit: fakeDifit,
+      run: fakeRun,
+      createPr: async (wt, base) => {
+        prCalls.push({ wt, base });
+        return { url: 'https://github.com/acme/repo/pull/7', created: true };
+      },
+    });
+  });
+
+  async function wtByBranch(branch: string | null, opts: { main?: boolean } = {}): Promise<{ id: string; dirty: boolean }> {
+    const body = (await (await prApp.request('/api/worktrees.json')).json()) as {
+      worktrees: Array<{ id: string; branch: string | null; isMain: boolean; dirty: boolean }>;
+    };
+    const wt = body.worktrees.find((w) => (opts.main ? w.isMain : w.branch === branch))!;
+    return { id: wt.id, dirty: wt.dirty };
+  }
+
+  test('POST /wt/:id/pr crea el PR contra la base efectiva', async () => {
+    const { id } = await wtByBranch('feat-a');
+    prCalls.length = 0;
+    const res = await prApp.request(`/wt/${id}/pr`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; url: string; created: boolean; warning?: string };
+    expect(body.ok).toBe(true);
+    expect(body.url).toBe('https://github.com/acme/repo/pull/7');
+    expect(body.created).toBe(true);
+    expect(body.warning).toBeUndefined();
+    expect(prCalls).toHaveLength(1);
+    expect(prCalls[0]?.wt.branch).toBe('feat-a');
+    expect(prCalls[0]?.base).toBe('main');
+  });
+
+  test('con cambios sin commitear el PR se crea pero avisa', async () => {
+    const { id } = await wtByBranch('feat-b');
+    const res = await prApp.request(`/wt/${id}/pr`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { warning?: string };
+    expect(body.warning).toContain('sin commitear');
+  });
+
+  test('un worktree detached no puede crear PR', async () => {
+    const { id } = await wtByBranch(null);
+    prCalls.length = 0;
+    const res = await prApp.request(`/wt/${id}/pr`, { method: 'POST' });
+    expect(res.status).toBe(400);
+    expect(prCalls).toHaveLength(0);
+  });
+
+  test('la rama base no puede abrir PR contra sí misma', async () => {
+    const { id } = await wtByBranch(null, { main: true });
+    const res = await prApp.request(`/wt/${id}/pr`, { method: 'POST' });
+    expect(res.status).toBe(400);
+  });
+
+  test('si gh falla, responde 500 con el error', async () => {
+    const failApp = createHubApp({
+      repoRoot: fx.repo,
+      difit: fakeDifit,
+      run: fakeRun,
+      createPr: async () => {
+        throw new Error('gh explotó');
+      },
+    });
+    const { id } = await wtByBranch('feat-a');
+    const res = await failApp.request(`/wt/${id}/pr`, { method: 'POST' });
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('gh explotó');
+  });
+});
+
+describe('eliminar worktree', () => {
+  let counter = 0;
+
+  /** Crea un worktree desechable con su rama; devuelve su id en el hub. */
+  async function addDisposable(opts: { dirty?: boolean } = {}): Promise<{ id: string; branch: string; dir: string }> {
+    counter++;
+    const branch = `feat-borrar-${counter}`;
+    const dir = path.join(fx.root, `wt-borrar-${counter}`);
+    execFileSync('git', ['worktree', 'add', '-b', branch, dir, 'main'], { cwd: fx.repo, stdio: 'ignore' });
+    if (opts.dirty) fs.writeFileSync(path.join(dir, 'sucio.txt'), 'sin commitear\n');
+    const body = (await (await app.request('/api/worktrees.json')).json()) as {
+      worktrees: Array<{ id: string; branch: string | null }>;
+    };
+    return { id: body.worktrees.find((w) => w.branch === branch)!.id, branch, dir };
+  }
+
+  async function listedBranches(): Promise<Array<string | null>> {
+    const body = (await (await app.request('/api/worktrees.json')).json()) as {
+      worktrees: Array<{ branch: string | null }>;
+    };
+    return body.worktrees.map((w) => w.branch);
+  }
+
+  function localBranches(): string {
+    return execFileSync('git', ['branch', '--list'], { cwd: fx.repo, encoding: 'utf8' });
+  }
+
+  test('elimina el worktree y conserva la rama por defecto', async () => {
+    const { id, branch } = await addDisposable();
+    difitStopped.length = 0;
+    runStopped.length = 0;
+    const res = await app.request(`/wt/${id}/delete`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as object).toMatchObject({ ok: true, branchDeleted: false });
+    expect(await listedBranches()).not.toContain(branch);
+    expect(localBranches()).toContain(branch);
+    // apagó los procesos asociados antes de borrar
+    expect(difitStopped).toEqual([id]);
+    expect(runStopped).toEqual([id]);
+  });
+
+  test('con deleteBranch también borra la rama local', async () => {
+    const { id, branch } = await addDisposable();
+    const res = await app.request(`/wt/${id}/delete`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ deleteBranch: true }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as object).toMatchObject({ ok: true, branchDeleted: true });
+    expect(localBranches()).not.toContain(branch);
+  });
+
+  test('worktree sucio: 409 sin force, borra con force', async () => {
+    const { id, dir } = await addDisposable({ dirty: true });
+    const res409 = await app.request(`/wt/${id}/delete`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(res409.status).toBe(409);
+    expect((await res409.json()) as object).toMatchObject({ requiresForce: true });
+    expect(fs.existsSync(dir)).toBe(true);
+
+    const resForce = await app.request(`/wt/${id}/delete`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ force: true, deleteBranch: true }),
+    });
+    expect(resForce.status).toBe(200);
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  test('el worktree principal no se puede eliminar', async () => {
+    const body = (await (await app.request('/api/worktrees.json')).json()) as {
+      worktrees: Array<{ id: string; isMain: boolean }>;
+    };
+    const main = body.worktrees.find((w) => w.isMain)!;
+    const res = await app.request(`/wt/${main.id}/delete`, { method: 'POST' });
+    expect(res.status).toBe(400);
+  });
+
+  test('worktree desconocido responde 404', async () => {
+    const res = await app.request('/wt/no-existe/delete', { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('controles del dashboard (run / PR / eliminar)', () => {
+  beforeAll(async () => {
+    await app.request('/api/run-command', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: 'npm run dev' }),
+    });
+  });
+
+  test('el agregado incluye el estado run de cada worktree', async () => {
+    const list = (await (await app.request('/api/worktrees.json')).json()) as {
+      worktrees: Array<{ id: string; branch: string | null; run: { running: boolean; url: string | null } | null }>;
+    };
+    const featA = list.worktrees.find((w) => w.branch === 'feat-a')!;
+    expect(featA.run).toBeNull();
+
+    runStatuses.set(featA.id, fakeRunStatus());
+    const list2 = (await (await app.request('/api/worktrees.json')).json()) as typeof list;
+    const featA2 = list2.worktrees.find((w) => w.branch === 'feat-a')!;
+    expect(featA2.run).toMatchObject({ running: true, url: 'http://localhost:9000/' });
+  });
+
+  test('el dashboard muestra el input del comando dev con el valor guardado', async () => {
+    const html = await (await app.request('/')).text();
+    expect(html).toContain('id="run-command"');
+    expect(html).toMatch(/id="run-command"[^>]*value="npm run dev"/);
+  });
+
+  test('la tarjeta con proceso corriendo muestra Abrir app y Detener; el resto Levantar', async () => {
+    const html = await (await app.request('/')).text();
+    // feat-a corre (estado seteado en el test anterior)
+    expect(html).toContain('http://localhost:9000/');
+    expect(html).toContain('Detener');
+    expect(html).toContain('Levantar');
+  });
+
+  test('PR y Eliminar aparecen según el tipo de worktree', async () => {
+    const html = await (await app.request('/')).text();
+    // 5 worktrees: main (sin PR ni eliminar), detached (sin PR), feat-a/b/clean (todo)
+    expect(html.match(/data-action="pr"/g)).toHaveLength(3);
+    expect(html.match(/data-action="delete"/g)).toHaveLength(4);
+    expect(html).toContain('id="delete-dialog"');
   });
 });

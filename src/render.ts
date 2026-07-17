@@ -64,6 +64,23 @@ export function renderReviewMarkdown(data: ReviewAggregate): string {
 
 // ---------- Dashboard HTML ----------
 
+function runControlsHtml(wt: WorktreeReview): string {
+  const id = esc(wt.id);
+  if (wt.run?.running) {
+    const appLink = wt.run.url
+      ? `<a class="btn ghost" href="${esc(wt.run.url)}" target="_blank" rel="noopener">Abrir app</a>`
+      : `<span class="muted esperando" data-wt="${id}">arrancando…</span>`;
+    return `${appLink}
+    <button class="btn ghost stop" data-action="stop" data-wt="${id}">Detener</button>
+    <a class="loglink" href="/wt/${id}/run/logs" target="_blank" rel="noopener">logs</a>`;
+  }
+  const crashed =
+    wt.run && !wt.run.running && wt.run.exitCode !== 0 && wt.run.exitCode !== null
+      ? ` <a class="loglink crash" href="/wt/${id}/run/logs" target="_blank" rel="noopener">falló (exit ${wt.run.exitCode}) · logs</a>`
+      : '';
+  return `<button class="btn ghost" data-action="start" data-wt="${id}">▶ Levantar</button>${crashed}`;
+}
+
 function cardHtml(wt: WorktreeReview): string {
   const s = wt.summary;
   const badges: string[] = [];
@@ -71,13 +88,29 @@ function cardHtml(wt: WorktreeReview): string {
   if (wt.detached) badges.push('<span class="badge">detached</span>');
   if (wt.locked) badges.push('<span class="badge">locked</span>');
   if (wt.dirty) badges.push('<span class="badge dirty">sin commitear</span>');
+  if (wt.run?.running) badges.push('<span class="badge running">corriendo</span>');
   if (s.truncated) badges.push('<span class="badge">diff truncado</span>');
 
   const baseInfo = s.baseBranch
     ? `vs <code>${esc(s.baseBranch)}</code> · ↑${s.ahead} ↓${s.behind}`
     : 'base sin resolver';
 
-  return `<article class="card">
+  const id = esc(wt.id);
+  const canPr = !wt.isMain && !wt.detached && wt.branch !== null;
+  const actions: string[] = [
+    `<a class="btn" href="/wt/${id}/open" target="_blank" rel="noopener">Abrir review</a>`,
+    runControlsHtml(wt),
+  ];
+  if (canPr) {
+    actions.push(`<button class="btn ghost" data-action="pr" data-wt="${id}">Crear PR</button>`);
+  }
+  if (!wt.isMain) {
+    actions.push(
+      `<button class="btn danger" data-action="delete" data-wt="${id}" data-label="${esc(label(wt))}" data-branch="${esc(wt.branch ?? '')}" data-dirty="${wt.dirty}">Eliminar</button>`,
+    );
+  }
+
+  return `<article class="card" data-wt="${id}">
   <header>
     <h2>${esc(label(wt))}</h2>
     ${badges.join('\n    ')}
@@ -85,7 +118,7 @@ function cardHtml(wt: WorktreeReview): string {
   <p class="path" title="${esc(wt.path)}"><code>${esc(wt.path)}</code></p>
   <p class="stats">${baseInfo} · ${s.files.length} archivo(s) <span class="add">+${s.additions}</span> <span class="del">−${s.deletions}</span></p>
   <footer>
-    <a class="btn" href="/wt/${esc(wt.id)}/open" target="_blank" rel="noopener">Abrir review</a>
+    ${actions.join('\n    ')}
   </footer>
 </article>`;
 }
@@ -99,6 +132,8 @@ export interface DashboardOptions {
   baseLocked: boolean;
   /** Modo de review actual. */
   mode: ReviewMode;
+  /** Comando de arranque configurado para el repo, o null. */
+  runCommand: string | null;
 }
 
 function modeToggleHtml(mode: ReviewMode): string {
@@ -146,6 +181,131 @@ function baseSelectorHtml(opts: DashboardOptions): string {
   </script>`;
 }
 
+function runCommandHtml(runCommand: string | null): string {
+  return `<label class="runcmd">comando dev
+    <input id="run-command" type="text" value="${esc(runCommand ?? '')}" placeholder="ej. cd projects/suite &amp;&amp; npm run dev" spellcheck="false">
+  </label>
+  <script>
+    const runCmdInput = document.getElementById('run-command');
+    async function saveRunCommand() {
+      const command = runCmdInput.value.trim();
+      if (!command) return;
+      const res = await fetch('/api/run-command', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ command }),
+      });
+      if (!res.ok) alert((await res.json()).error ?? 'no se pudo guardar el comando');
+      else runCmdInput.classList.add('saved'), setTimeout(() => runCmdInput.classList.remove('saved'), 800);
+    }
+    runCmdInput.addEventListener('change', saveRunCommand);
+    runCmdInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') runCmdInput.blur(); });
+  </script>`;
+}
+
+const CARD_ACTIONS_JS = `
+<dialog id="delete-dialog">
+  <form method="dialog">
+    <h3>Eliminar worktree</h3>
+    <p id="delete-target"></p>
+    <label id="delete-branch-row"><input type="checkbox" id="delete-branch-chk"> borrar también la rama local</label>
+    <p class="muted small">Los procesos asociados (difit, dev server) se detienen primero.</p>
+    <menu>
+      <button value="cancel" class="btn ghost">Cancelar</button>
+      <button value="confirm" class="btn danger">Eliminar</button>
+    </menu>
+  </form>
+</dialog>
+<script>
+  async function postJson(url, body) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body ?? {}),
+    });
+    let data = null;
+    try { data = await res.json(); } catch {}
+    return { ok: res.ok, status: res.status, data };
+  }
+
+  async function pollUntilUrl(wt) {
+    for (let i = 0; i < 120; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const res = await fetch('/wt/' + wt + '/run');
+      const status = await res.json();
+      if (!status || !status.running || status.url) return;
+    }
+  }
+
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const wt = btn.dataset.wt;
+
+    if (btn.dataset.action === 'start') {
+      btn.disabled = true;
+      btn.textContent = 'arrancando…';
+      const { ok, data } = await postJson('/wt/' + wt + '/run/start');
+      if (!ok) {
+        alert(data?.error ?? 'no se pudo levantar');
+        location.reload();
+        return;
+      }
+      await pollUntilUrl(wt);
+      location.reload();
+    }
+
+    if (btn.dataset.action === 'stop') {
+      btn.disabled = true;
+      await postJson('/wt/' + wt + '/run/stop');
+      location.reload();
+    }
+
+    if (btn.dataset.action === 'pr') {
+      btn.disabled = true;
+      btn.textContent = 'creando PR…';
+      const { ok, data } = await postJson('/wt/' + wt + '/pr');
+      btn.disabled = false;
+      btn.textContent = 'Crear PR';
+      if (!ok) {
+        alert(data?.error ?? 'no se pudo crear el PR');
+        return;
+      }
+      if (data.warning) alert('⚠️ ' + data.warning);
+      window.open(data.url, '_blank');
+    }
+
+    if (btn.dataset.action === 'delete') {
+      const dialog = document.getElementById('delete-dialog');
+      const chkRow = document.getElementById('delete-branch-row');
+      const chk = document.getElementById('delete-branch-chk');
+      chk.checked = false;
+      chkRow.style.display = btn.dataset.branch ? '' : 'none';
+      document.getElementById('delete-target').textContent =
+        btn.dataset.label + (btn.dataset.dirty === 'true' ? ' — ⚠️ tiene cambios sin commitear' : '');
+      dialog.returnValue = 'cancel';
+      dialog.showModal();
+      dialog.addEventListener('close', async function onClose() {
+        dialog.removeEventListener('close', onClose);
+        if (dialog.returnValue !== 'confirm') return;
+        let res = await postJson('/wt/' + wt + '/delete', { deleteBranch: chk.checked });
+        if (res.status === 409 && res.data?.requiresForce) {
+          if (!confirm('Tiene cambios sin commitear que se perderán. ¿Forzar la eliminación?')) return;
+          res = await postJson('/wt/' + wt + '/delete', { deleteBranch: chk.checked, force: true });
+        }
+        if (!res.ok) alert(res.data?.error ?? 'no se pudo eliminar');
+        location.reload();
+      });
+    }
+  });
+
+  // tarjetas corriendo pero aún sin URL: esperar a que aparezca y refrescar
+  document.querySelectorAll('.esperando').forEach(async (el) => {
+    await pollUntilUrl(el.dataset.wt);
+    location.reload();
+  });
+</script>`;
+
 export function renderDashboardHtml(data: ReviewAggregate, opts: DashboardOptions): string {
   const cards = data.worktrees.map(cardHtml).join('\n');
   return `<!doctype html>
@@ -182,8 +342,25 @@ export function renderDashboardHtml(data: ReviewAggregate, opts: DashboardOption
   .stats { margin: 0; font-size: .82rem; color: var(--muted); }
   .add { color: var(--green); } .del { color: var(--red); }
   .card footer { margin-top: auto; padding-top: .35rem; }
-  .btn { display: inline-block; background: var(--accent); color: #fff; text-decoration: none; font-size: .82rem; padding: .42rem .9rem; border-radius: 7px; }
+  .btn { display: inline-block; background: var(--accent); color: #fff; text-decoration: none; font-size: .82rem; padding: .42rem .9rem; border-radius: 7px; border: none; cursor: pointer; font-family: inherit; }
   .btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  .btn.danger { background: transparent; color: var(--red); border: 1px solid var(--red); }
+  .btn:disabled { opacity: .55; cursor: wait; }
+  .card footer { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+  .badge.running { color: var(--green); border-color: var(--green); }
+  .loglink { font-size: .75rem; color: var(--muted); }
+  .loglink.crash { color: var(--red); }
+  .muted { color: var(--muted); font-size: .8rem; }
+  .small { font-size: .74rem; }
+  .toolbar { margin: .2rem 0 .6rem; }
+  .runcmd { font-size: .82rem; color: var(--muted); display: flex; align-items: center; gap: .5rem; }
+  .runcmd input { flex: 1; max-width: 480px; background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 7px; padding: .38rem .55rem; font-size: .8rem; font-family: ui-monospace, monospace; }
+  .runcmd input.saved { border-color: var(--green); }
+  #delete-dialog { background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 10px; padding: 1.2rem 1.4rem; max-width: 26rem; }
+  #delete-dialog::backdrop { background: rgba(0,0,0,.55); }
+  #delete-dialog h3 { margin: 0 0 .6rem; font-size: 1rem; }
+  #delete-dialog label { display: flex; align-items: center; gap: .45rem; font-size: .85rem; margin: .6rem 0; }
+  #delete-dialog menu { display: flex; justify-content: flex-end; gap: .6rem; padding: 0; margin: 1rem 0 0; }
   .ai { margin-top: 2.2rem; border-top: 1px solid var(--border); padding-top: 1.2rem; font-size: .85rem; color: var(--muted); }
   .ai code { background: var(--card); border: 1px solid var(--border); border-radius: 5px; padding: .12rem .4rem; }
   .ai h3 { color: var(--fg); font-size: .95rem; margin: 0 0 .5rem; }
@@ -199,6 +376,9 @@ export function renderDashboardHtml(data: ReviewAggregate, opts: DashboardOption
       <a class="btn ghost" href="/">Refrescar</a>
     </div>
   </div>
+  <div class="toolbar">
+    ${runCommandHtml(opts.runCommand)}
+  </div>
   <p class="repo">${esc(data.repo)} · ${data.worktrees.length} worktree(s) · ${esc(data.generatedAt)}</p>
   <div class="grid">
 ${cards}
@@ -209,6 +389,7 @@ ${cards}
     <p><code>GET /api/review.json</code> — estructurado · <code>GET /review.md</code> — markdown · <code>GET /api/worktrees.json</code> — lista sin diffs</p>
   </div>
 </div>
+${CARD_ACTIONS_JS}
 </body>
 </html>`;
 }
