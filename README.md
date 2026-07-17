@@ -40,7 +40,7 @@ Así puedes probar los cambios de cada worktree antes de crear el PR. Si levanta
 
 ### Abrir en VS Code
 
-Cada tarjeta tiene un botón **VS Code** que abre ese worktree en el editor (deep link `vscode://file/<ruta>`), por si querés modificar o agregar algo a mano antes de crear el PR. La primera vez el navegador te pedirá permiso para abrir Visual Studio Code.
+Cada tarjeta tiene un botón **VS Code** que abre ese worktree en el editor ejecutando `code <ruta>` (por comando, no por deep link `vscode://`: así abre su propia ventana **sin cerrar las que ya tengas abiertas**), por si querés modificar o agregar algo a mano antes de crear el PR. Requiere el comando `code` en el PATH (en VS Code: paleta de comandos → *"Shell Command: Install 'code' command in PATH"*). Para usar otro editor definí `WTV_EDITOR` (p. ej. `WTV_EDITOR=cursor`).
 
 ### Crear el Pull Request
 
@@ -87,6 +87,7 @@ Todo el contenido agregado está disponible en URLs estables:
 | `POST /wt/:id/run-command` | Fijar (`{ command }`) o limpiar (`""`) el comando propio de ese worktree |
 | `POST /api/sort` | Cambiar el orden del dashboard (`{ sort: 'modified-desc' \| 'modified-asc' \| 'created-desc' \| 'created-asc' }`) |
 | `POST /wt/:id/archive` | Archivar/desarchivar un worktree (`{ archived: boolean }`) |
+| `POST /wt/:id/open-editor` | Abrir el worktree en el editor (`code <ruta>`, o `$WTV_EDITOR`) |
 | `POST /wt/:id/pr` | Push + crear el PR con gh (`{ url, created, warning? }`) |
 | `POST /wt/:id/delete` | Eliminar el worktree (`{ deleteBranch?, force? }`) |
 
@@ -115,7 +116,7 @@ npm run build       # tsup → dist/
 npm run dev         # tsx src/cli.ts
 ```
 
-Arquitectura: `src/worktrees.ts` (enumeración), `src/git-summary.ts` (diff/resumen por worktree vía git), `src/worktree-dates.ts` (fechas de creación/último commit para ordenar), `src/difit-manager.ts` (ciclo de vida de los difit hijos), `src/run-manager.ts` (dev servers por worktree), `src/pr.ts` (push + gh pr create + lookup del PR), `src/hub-server.ts` + `src/render.ts` (hub HTTP, dashboard y endpoints), `src/cli.ts` (entrada).
+Arquitectura: `src/worktrees.ts` (enumeración), `src/git-summary.ts` (diff/resumen por worktree vía git), `src/worktree-dates.ts` (fechas de creación/último commit para ordenar), `src/difit-manager.ts` (ciclo de vida de los difit hijos), `src/run-manager.ts` (dev servers por worktree), `src/pr.ts` (push + gh pr create + lookup del PR), `src/editor.ts` (abrir el worktree en el editor por comando), `src/hub-server.ts` + `src/render.ts` (hub HTTP, dashboard y endpoints), `src/cli.ts` (entrada).
 
 ## Licencia
 

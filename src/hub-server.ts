@@ -18,6 +18,7 @@ import {
   type WorktreeSort,
 } from './config.js';
 import type { DifitInstance } from './difit-manager.js';
+import { openInEditor } from './editor.js';
 import { createPullRequest, lookupPullRequest, type PrInfo, type PrResult } from './pr.js';
 import type { RunStatus } from './run-manager.js';
 import { detectBaseBranch, summarizeWorktree, type WorktreeSummary } from './git-summary.js';
@@ -53,6 +54,8 @@ export interface HubContext {
   createPr?: (wt: Worktree, base: string | null) => Promise<PrResult>;
   /** Busca el PR de una rama (best-effort). Inyectable en tests; por defecto gh CLI. */
   lookupPr?: (branch: string, cwd: string) => Promise<PrInfo | null>;
+  /** Abre un worktree en el editor. Inyectable en tests; por defecto `code <ruta>`. */
+  openEditor?: (worktreePath: string) => Promise<void>;
   /** Tope de bytes por diff en los endpoints agregados. */
   maxDiffBytes?: number;
 }
@@ -228,6 +231,19 @@ export function createHubApp(ctx: HubContext): HubApp {
     const base = mode === 'wip' ? null : await detectBaseBranch(wt.path, resolveBaseOverride(ctx));
     const inst = await ctx.difit.ensure(wt, base);
     return c.redirect(inst.url, 302);
+  });
+
+  // Abre el worktree en el editor (por comando, no deep link: no cierra otras ventanas).
+  app.post('/wt/:id/open-editor', async (c) => {
+    const id = c.req.param('id');
+    const wt = await findWorktree(ctx, id);
+    if (!wt) return c.text(`worktree desconocido: ${id}`, 404);
+    try {
+      await (ctx.openEditor ?? openInEditor)(wt.path);
+      return c.json({ ok: true });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
   });
 
   app.post('/api/run-command', async (c) => {

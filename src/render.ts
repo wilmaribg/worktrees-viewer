@@ -38,12 +38,6 @@ function prStateLabel(state: string): string {
   return PR_STATE_LABELS[state] ?? state.toLowerCase();
 }
 
-/** Deep link `vscode://file/<ruta>` para abrir el worktree en VS Code (segmentos codificados). */
-function vscodeUrl(fsPath: string): string {
-  const encoded = fsPath.split('/').map(encodeURIComponent).join('/');
-  return `vscode://file${encoded}`;
-}
-
 /** Ordena worktrees por la clave elegida; los nulos van siempre al final. */
 function sortWorktrees(list: WorktreeReview[], sort: WorktreeSort): WorktreeReview[] {
   const desc = sort.endsWith('desc');
@@ -148,7 +142,7 @@ function cardHtml(wt: WorktreeReview, generalCommand: string | null, now: string
   const canPr = !wt.isMain && !wt.detached && wt.branch !== null;
   const actions: string[] = [
     `<a class="btn" href="/wt/${id}/open" target="_blank" rel="noopener">Abrir review</a>`,
-    `<a class="btn ghost" href="${esc(vscodeUrl(wt.path))}" title="Abrir este worktree en VS Code">VS Code</a>`,
+    `<button class="btn ghost" data-action="editor" data-wt="${id}" title="Abrir este worktree en VS Code">VS Code</button>`,
     runControlsHtml(wt),
   ];
   if (canPr) {
@@ -348,6 +342,13 @@ const CARD_ACTIONS_JS = `
       btn.disabled = true;
       await postJson('/wt/' + wt + '/run/stop');
       location.reload();
+    }
+
+    if (btn.dataset.action === 'editor') {
+      btn.disabled = true;
+      const { ok, data } = await postJson('/wt/' + wt + '/open-editor');
+      btn.disabled = false;
+      if (!ok) alert(data?.error ?? 'no se pudo abrir VS Code');
     }
 
     if (btn.dataset.action === 'archive') {

@@ -80,6 +80,9 @@ const fakeRun = {
 // PR por rama para tests (vacío → lookup null, sin spawnear gh real)
 const fakePrs = new Map<string, PrInfo>();
 
+// rutas abiertas en el editor (fake de openEditor)
+const editorOpened: string[] = [];
+
 beforeAll(() => {
   tmpConfigHome = fs.mkdtempSync(path.join(os.tmpdir(), 'wtv-hub-config-'));
   process.env['XDG_CONFIG_HOME'] = tmpConfigHome;
@@ -89,6 +92,9 @@ beforeAll(() => {
     difit: fakeDifit,
     run: fakeRun,
     lookupPr: async (branch: string) => fakePrs.get(branch) ?? null,
+    openEditor: async (p: string) => {
+      editorOpened.push(p);
+    },
   });
 });
 
@@ -894,17 +900,42 @@ describe('dashboard: orden, archivados, fechas y PR', () => {
 });
 
 describe('abrir en VS Code', () => {
-  test('cada tarjeta tiene un link vscode://file a la ruta del worktree', async () => {
+  test('POST /wt/:id/open-editor abre el worktree en el editor (por comando)', async () => {
     const list = (await (await app.request('/api/worktrees.json')).json()) as {
-      worktrees: Array<{ branch: string | null; path: string }>;
+      worktrees: Array<{ id: string; branch: string | null; path: string }>;
     };
     const featA = list.worktrees.find((w) => w.branch === 'feat-a')!;
-    const expectedHref = 'vscode://file' + featA.path.split('/').map(encodeURIComponent).join('/');
+    editorOpened.length = 0;
+    const res = await app.request(`/wt/${featA.id}/open-editor`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(editorOpened).toEqual([featA.path]);
+  });
 
+  test('POST /wt/desconocido/open-editor responde 404', async () => {
+    const res = await app.request('/wt/no-existe/open-editor', { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
+
+  test('si el editor falla responde 500 con el error', async () => {
+    const failApp = createHubApp({
+      repoRoot: fx.repo,
+      difit: fakeDifit,
+      run: fakeRun,
+      openEditor: async () => {
+        throw new Error('no se encontró "code" en el PATH');
+      },
+    });
+    const id = await idOf('feat-a');
+    const res = await failApp.request(`/wt/${id}/open-editor`, { method: 'POST' });
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as { error: string }).error).toContain('PATH');
+  });
+
+  test('cada tarjeta tiene un botón VS Code (data-action=editor), sin deep link', async () => {
     const html = await (await app.request('/')).text();
-    expect(html).toContain(`href="${expectedHref}"`);
+    expect(html.match(/data-action="editor"/g)?.length).toBeGreaterThanOrEqual(5);
     expect(html).toContain('VS Code');
-    // un link por worktree (incluido el principal)
-    expect(html.match(/vscode:\/\/file/g)?.length).toBeGreaterThanOrEqual(5);
+    expect(html).not.toContain('vscode://');
   });
 });
