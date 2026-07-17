@@ -34,6 +34,8 @@ Define una vez el **comando dev** en la cabecera (ej. `cd projects/suite && npm 
 - **Detener**: mata el proceso y todos sus hijos
 - **logs**: la salida del comando en texto plano (`/wt/:id/run/logs`)
 
+Cada tarjeta tiene además su **propio campo de comando**: en un monorepo cada proyecto se levanta distinto, así que puedes fijar un comando por worktree que sobreescribe al general. El placeholder muestra el comando general; si dejas el campo vacío, ese worktree vuelve a usarlo. El override se guarda por repo y por worktree (`POST /wt/:id/run-command`).
+
 Así puedes probar los cambios de cada worktree antes de crear el PR. Si levantas varios a la vez, la mayoría de dev servers (vite, quasar, webpack) auto-incrementan el puerto solos.
 
 ### Crear el Pull Request
@@ -72,6 +74,7 @@ Todo el contenido agregado está disponible en URLs estables:
 | `GET /review.md` | Lo mismo en Markdown legible |
 | `GET /api/worktrees.json` | Lista ligera sin diffs (para sondeo rápido; incluye el estado `run` de cada worktree) |
 | `POST /wt/:id/run/start` · `/run/stop` · `GET /wt/:id/run` | Levantar/detener/consultar el dev server de un worktree |
+| `POST /wt/:id/run-command` | Fijar (`{ command }`) o limpiar (`""`) el comando propio de ese worktree |
 | `POST /wt/:id/pr` | Push + crear el PR con gh (`{ url, created, warning? }`) |
 | `POST /wt/:id/delete` | Eliminar el worktree (`{ deleteBranch?, force? }`) |
 

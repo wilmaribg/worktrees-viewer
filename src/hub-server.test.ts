@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
-import { readRepoBase, readRepoRunCommand } from './config.js';
+import { readRepoBase, readRepoRunCommand, readRepoWorktreeRunCommand } from './config.js';
 import type { DifitInstance } from './difit-manager.js';
 import { createHubApp, type HubApp } from './hub-server.js';
 import type { RunStatus } from './run-manager.js';
@@ -360,6 +360,90 @@ function configPathIn(configHome: string): string {
   return path.join(configHome, 'wtv', 'config.json');
 }
 
+describe('comando por worktree (monorepo)', () => {
+  async function wtId(branch: string): Promise<string> {
+    const body = (await (await app.request('/api/worktrees.json')).json()) as {
+      worktrees: Array<{ id: string; branch: string | null }>;
+    };
+    return body.worktrees.find((w) => w.branch === branch)!.id;
+  }
+
+  beforeAll(async () => {
+    // el bloque anterior borró la config: reponer el comando general
+    await app.request('/api/run-command', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: 'npm run dev' }),
+    });
+  });
+
+  afterAll(async () => {
+    await fakeRun.stopAll(); // no dejar procesos vivos para el bloque siguiente
+  });
+
+  test('el agregado expone el override por worktree (null por defecto)', async () => {
+    const body = (await (await app.request('/api/worktrees.json')).json()) as {
+      worktrees: Array<{ branch: string | null; runCommandOverride: string | null }>;
+    };
+    expect(body.worktrees.find((w) => w.branch === 'feat-a')!.runCommandOverride).toBeNull();
+  });
+
+  test('POST /wt/:id/run-command guarda un override propio', async () => {
+    const id = await wtId('feat-a');
+    const res = await app.request(`/wt/${id}/run-command`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: 'cd apps/api && npm start' }),
+    });
+    expect(res.status).toBe(200);
+    expect(readRepoWorktreeRunCommand(fx.repo, id)).toBe('cd apps/api && npm start');
+
+    const body = (await (await app.request('/api/worktrees.json')).json()) as {
+      worktrees: Array<{ id: string; runCommandOverride: string | null }>;
+    };
+    expect(body.worktrees.find((w) => w.id === id)!.runCommandOverride).toBe('cd apps/api && npm start');
+  });
+
+  test('start usa el override del worktree, no el general', async () => {
+    const id = await wtId('feat-a');
+    runStarted.length = 0;
+    const res = await app.request(`/wt/${id}/run/start`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(runStarted[0]?.command).toBe('cd apps/api && npm start');
+  });
+
+  test('otros worktrees siguen usando el comando general', async () => {
+    const id = await wtId('feat-b');
+    runStarted.length = 0;
+    await app.request(`/wt/${id}/run/start`, { method: 'POST' });
+    expect(runStarted[0]?.command).toBe('npm run dev');
+  });
+
+  test('POST /wt/:id/run-command vacío borra el override (vuelve al general)', async () => {
+    const id = await wtId('feat-a');
+    const res = await app.request(`/wt/${id}/run-command`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: '  ' }),
+    });
+    expect(res.status).toBe(200);
+    expect(readRepoWorktreeRunCommand(fx.repo, id)).toBeNull();
+
+    runStarted.length = 0;
+    await app.request(`/wt/${id}/run/start`, { method: 'POST' });
+    expect(runStarted[0]?.command).toBe('npm run dev');
+  });
+
+  test('run-command sobre worktree desconocido responde 404', async () => {
+    const res = await app.request('/wt/no-existe/run-command', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: 'x' }),
+    });
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('crear pull request', () => {
   const prCalls: Array<{ wt: Worktree; base: string | null }> = [];
   let prApp: HubApp;
@@ -572,5 +656,30 @@ describe('controles del dashboard (run / PR / eliminar)', () => {
     expect(html.match(/data-action="pr"/g)).toHaveLength(3);
     expect(html.match(/data-action="delete"/g)).toHaveLength(4);
     expect(html).toContain('id="delete-dialog"');
+  });
+
+  test('cada tarjeta tiene su input de comando con el general como placeholder', async () => {
+    const id = (
+      (await (await app.request('/api/worktrees.json')).json()) as {
+        worktrees: Array<{ id: string; branch: string | null }>;
+      }
+    ).worktrees.find((w) => w.branch === 'feat-b')!.id;
+    // ponerle un override para verificar que aparece como value
+    await app.request(`/wt/${id}/run-command`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: 'cd apps/web && npm run dev' }),
+    });
+    const html = await (await app.request('/')).text();
+    // un input por-tarjeta con el placeholder = comando general
+    expect(html.match(/class="wt-command"/g)?.length).toBeGreaterThanOrEqual(4);
+    expect(html).toContain('placeholder="npm run dev"');
+    expect(html).toContain('value="cd apps/web &amp;&amp; npm run dev"');
+    // limpiar
+    await app.request(`/wt/${id}/run-command`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: '' }),
+    });
   });
 });

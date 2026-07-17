@@ -81,7 +81,7 @@ function runControlsHtml(wt: WorktreeReview): string {
   return `<button class="btn ghost" data-action="start" data-wt="${id}">▶ Levantar</button>${crashed}`;
 }
 
-function cardHtml(wt: WorktreeReview): string {
+function cardHtml(wt: WorktreeReview, generalCommand: string | null): string {
   const s = wt.summary;
   const badges: string[] = [];
   if (wt.isMain) badges.push('<span class="badge main">principal</span>');
@@ -110,6 +110,11 @@ function cardHtml(wt: WorktreeReview): string {
     );
   }
 
+  const cmdPlaceholder = generalCommand ? esc(generalCommand) : 'comando para levantar este worktree';
+  const cmdInput = `<label class="wt-command-row" title="comando propio de este worktree (vacío = usa el general)">
+    <input class="wt-command" data-wt="${id}" type="text" value="${esc(wt.runCommandOverride ?? '')}" placeholder="${cmdPlaceholder}" spellcheck="false">
+  </label>`;
+
   return `<article class="card" data-wt="${id}">
   <header>
     <h2>${esc(label(wt))}</h2>
@@ -117,6 +122,7 @@ function cardHtml(wt: WorktreeReview): string {
   </header>
   <p class="path" title="${esc(wt.path)}"><code>${esc(wt.path)}</code></p>
   <p class="stats">${baseInfo} · ${s.files.length} archivo(s) <span class="add">+${s.additions}</span> <span class="del">−${s.deletions}</span></p>
+  ${cmdInput}
   <footer>
     ${actions.join('\n    ')}
   </footer>
@@ -299,6 +305,21 @@ const CARD_ACTIONS_JS = `
     }
   });
 
+  // input de comando por worktree: guarda el override (vacío = usa el general)
+  document.querySelectorAll('.wt-command').forEach((input) => {
+    input.addEventListener('change', async () => {
+      const command = input.value.trim();
+      const res = await fetch('/wt/' + input.dataset.wt + '/run-command', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ command }),
+      });
+      if (!res.ok) alert('no se pudo guardar el comando del worktree');
+      else { input.classList.add('saved'); setTimeout(() => input.classList.remove('saved'), 800); }
+    });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
+  });
+
   // tarjetas corriendo pero aún sin URL: esperar a que aparezca y refrescar
   document.querySelectorAll('.esperando').forEach(async (el) => {
     await pollUntilUrl(el.dataset.wt);
@@ -307,7 +328,7 @@ const CARD_ACTIONS_JS = `
 </script>`;
 
 export function renderDashboardHtml(data: ReviewAggregate, opts: DashboardOptions): string {
-  const cards = data.worktrees.map(cardHtml).join('\n');
+  const cards = data.worktrees.map((wt) => cardHtml(wt, opts.runCommand)).join('\n');
   return `<!doctype html>
 <html lang="es">
 <head>
@@ -356,6 +377,11 @@ export function renderDashboardHtml(data: ReviewAggregate, opts: DashboardOption
   .runcmd { font-size: .82rem; color: var(--muted); display: flex; align-items: center; gap: .5rem; }
   .runcmd input { flex: 1; max-width: 480px; background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 7px; padding: .38rem .55rem; font-size: .8rem; font-family: ui-monospace, monospace; }
   .runcmd input.saved { border-color: var(--green); }
+  .wt-command-row { display: flex; }
+  .wt-command { flex: 1; background: transparent; color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: .3rem .5rem; font-size: .74rem; font-family: ui-monospace, monospace; }
+  .wt-command:focus { border-color: var(--accent); outline: none; }
+  .wt-command.saved { border-color: var(--green); }
+  .wt-command::placeholder { color: var(--muted); opacity: .7; }
   #delete-dialog { background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 10px; padding: 1.2rem 1.4rem; max-width: 26rem; }
   #delete-dialog::backdrop { background: rgba(0,0,0,.55); }
   #delete-dialog h3 { margin: 0 0 .6rem; font-size: 1rem; }

@@ -12,8 +12,10 @@ export type ReviewMode = 'pr' | 'wip';
 interface RepoEntry {
   base?: string;
   mode?: ReviewMode;
-  /** Comando shell que levanta el proyecto (se ejecuta en la raíz del worktree). */
+  /** Comando shell general que levanta el proyecto (default para todos los worktrees). */
   runCommand?: string;
+  /** Overrides por worktree (keyed por id): comando propio para monorepos. */
+  worktreeRunCommands?: Record<string, string>;
 }
 
 interface WtvConfig {
@@ -62,7 +64,22 @@ export function writeRepoRunCommand(repoRoot: string, runCommand: string): void 
   writeRepoEntry(repoRoot, { runCommand });
 }
 
-function writeRepoEntry(repoRoot: string, entry: RepoEntry): void {
+/** Override de comando para un worktree concreto, o null si usa el general. */
+export function readRepoWorktreeRunCommand(repoRoot: string, wtId: string): string | null {
+  return readConfig().repos?.[repoRoot]?.worktreeRunCommands?.[wtId] ?? null;
+}
+
+/** Guarda (o borra, con command=null) el override de comando de un worktree. */
+export function writeRepoWorktreeRunCommand(repoRoot: string, wtId: string, command: string | null): void {
+  const config = readConfig();
+  const entry = config.repos?.[repoRoot] ?? {};
+  const overrides = { ...entry.worktreeRunCommands };
+  if (command === null) delete overrides[wtId];
+  else overrides[wtId] = command;
+  writeRepoEntry(repoRoot, { worktreeRunCommands: overrides });
+}
+
+function writeRepoEntry(repoRoot: string, entry: Partial<RepoEntry>): void {
   const config = readConfig();
   config.repos = { ...config.repos, [repoRoot]: { ...config.repos?.[repoRoot], ...entry } };
   fs.mkdirSync(path.dirname(configPath()), { recursive: true });
