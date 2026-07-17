@@ -1,0 +1,48 @@
+{
+  "name": "worktrees-viewer",
+  "version": "0.1.0",
+  "description": "Panel local para revisar los diffs de todos tus git worktrees antes de crear un PR — con endpoints machine-readable para agentes de IA",
+  "keywords": [
+    "git",
+    "worktree",
+    "diff",
+    "code-review",
+    "difit",
+    "ai"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "wtv": "./dist/cli.js",
+    "worktrees-viewer": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx src/cli.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.0",
+    "commander": "^14.0.0",
+    "difit": "^5.0.8",
+    "hono": "^4.8.0",
+    "open": "^10.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsup": "^8.5.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  }
+}
