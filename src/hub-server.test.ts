@@ -3,9 +3,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
-import { readRepoBase, readRepoRunCommand, readRepoWorktreeRunCommand } from './config.js';
+import {
+  isWorktreeArchived,
+  readRepoBase,
+  readRepoRunCommand,
+  readRepoSort,
+  readRepoWorktreeRunCommand,
+} from './config.js';
 import type { DifitInstance } from './difit-manager.js';
 import { createHubApp, type HubApp } from './hub-server.js';
+import type { PrInfo } from './pr.js';
 import type { RunStatus } from './run-manager.js';
 import { createFixture, type Fixture } from './test-fixture.js';
 import type { Worktree } from './worktrees.js';
@@ -70,11 +77,19 @@ const fakeRun = {
   },
 };
 
+// PR por rama para tests (vacío → lookup null, sin spawnear gh real)
+const fakePrs = new Map<string, PrInfo>();
+
 beforeAll(() => {
   tmpConfigHome = fs.mkdtempSync(path.join(os.tmpdir(), 'wtv-hub-config-'));
   process.env['XDG_CONFIG_HOME'] = tmpConfigHome;
   fx = createFixture();
-  app = createHubApp({ repoRoot: fx.repo, difit: fakeDifit, run: fakeRun });
+  app = createHubApp({
+    repoRoot: fx.repo,
+    difit: fakeDifit,
+    run: fakeRun,
+    lookupPr: async (branch: string) => fakePrs.get(branch) ?? null,
+  });
 });
 
 afterAll(() => {
@@ -681,5 +696,181 @@ describe('controles del dashboard (run / PR / eliminar)', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ command: '' }),
     });
+  });
+});
+
+async function idOf(branch: string): Promise<string> {
+  const list = (await (await app.request('/api/worktrees.json')).json()) as {
+    worktrees: Array<{ id: string; branch: string | null }>;
+  };
+  return list.worktrees.find((w) => w.branch === branch)!.id;
+}
+
+describe('fechas, archivar y orden (daily)', () => {
+  test('el agregado incluye createdAt, lastCommitAt, archived y pr', async () => {
+    const list = (await (await app.request('/api/worktrees.json')).json()) as {
+      worktrees: Array<{
+        branch: string | null;
+        createdAt: string | null;
+        lastCommitAt: string | null;
+        archived: boolean;
+        pr: PrInfo | null;
+      }>;
+    };
+    const featA = list.worktrees.find((w) => w.branch === 'feat-a')!;
+    expect(featA.createdAt).not.toBeNull();
+    expect(featA.lastCommitAt).not.toBeNull();
+    expect(featA.archived).toBe(false);
+    expect(featA.pr).toBeNull();
+  });
+
+  test('el pr aparece en el agregado cuando gh lo encuentra', async () => {
+    fakePrs.set('feat-a', { url: 'https://github.com/acme/repo/pull/7', state: 'OPEN', number: 7 });
+    try {
+      const list = (await (await app.request('/api/worktrees.json')).json()) as {
+        worktrees: Array<{ branch: string | null; pr: PrInfo | null }>;
+      };
+      const featA = list.worktrees.find((w) => w.branch === 'feat-a')!;
+      expect(featA.pr).toEqual({ url: 'https://github.com/acme/repo/pull/7', state: 'OPEN', number: 7 });
+    } finally {
+      fakePrs.delete('feat-a');
+    }
+  });
+
+  test('POST /wt/:id/archive marca y desmarca el worktree', async () => {
+    const id = await idOf('feat-clean');
+    const res = await app.request(`/wt/${id}/archive`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ archived: true }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, archived: true });
+    expect(isWorktreeArchived(fx.repo, id)).toBe(true);
+
+    const list = (await (await app.request('/api/worktrees.json')).json()) as {
+      worktrees: Array<{ id: string; archived: boolean }>;
+    };
+    expect(list.worktrees.find((w) => w.id === id)!.archived).toBe(true);
+
+    // desarchivar
+    await app.request(`/wt/${id}/archive`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ archived: false }),
+    });
+    expect(isWorktreeArchived(fx.repo, id)).toBe(false);
+  });
+
+  test('POST /wt/:id/archive con worktree desconocido responde 404', async () => {
+    const res = await app.request('/wt/no-existe/archive', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ archived: true }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  test('POST /api/sort persiste un orden válido y rechaza inválidos', async () => {
+    const ok = await app.request('/api/sort', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sort: 'created-asc' }),
+    });
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ ok: true, sort: 'created-asc' });
+    expect(readRepoSort(fx.repo)).toBe('created-asc');
+
+    const bad = await app.request('/api/sort', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sort: 'por-tamaño' }),
+    });
+    expect(bad.status).toBe(400);
+
+    // restaurar default para no afectar otros tests
+    await app.request('/api/sort', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sort: 'modified-desc' }),
+    });
+  });
+});
+
+async function setSort(sort: string): Promise<void> {
+  await app.request('/api/sort', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sort }),
+  });
+}
+
+async function setArchived(id: string, archived: boolean): Promise<void> {
+  await app.request(`/wt/${id}/archive`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ archived }),
+  });
+}
+
+describe('dashboard: orden, archivados, fechas y PR', () => {
+  afterAll(async () => {
+    await setSort('modified-desc');
+  });
+
+  test('tiene el control de orden con las cuatro opciones', async () => {
+    const html = await (await app.request('/')).text();
+    expect(html).toContain('id="sort-select"');
+    expect(html).toContain('value="modified-desc"');
+    expect(html).toContain('value="modified-asc"');
+    expect(html).toContain('value="created-desc"');
+    expect(html).toContain('value="created-asc"');
+  });
+
+  test('cada tarjeta muestra fechas y botón Archivar', async () => {
+    const html = await (await app.request('/')).text();
+    expect(html.match(/class="wt-dates"/g)?.length).toBeGreaterThanOrEqual(4);
+    expect(html).toContain('data-action="archive"');
+    expect(html).toContain('Archivar');
+  });
+
+  test('los worktrees archivados van a una sección colapsable', async () => {
+    const id = await idOf('feat-clean');
+    await setArchived(id, true);
+    try {
+      const html = await (await app.request('/')).text();
+      expect(html).toContain('<details');
+      expect(html).toContain('Archivados');
+      expect(html).toContain('Desarchivar');
+      // la tarjeta archivada vive dentro del <details>
+      const detailsStart = html.indexOf('<details');
+      expect(html.indexOf(`data-wt="${id}"`)).toBeGreaterThan(detailsStart);
+    } finally {
+      await setArchived(id, false);
+    }
+  });
+
+  test('la tarjeta muestra el link al PR cuando existe', async () => {
+    fakePrs.set('feat-a', { url: 'https://github.com/acme/repo/pull/7', state: 'OPEN', number: 7 });
+    try {
+      const html = await (await app.request('/')).text();
+      expect(html).toContain('href="https://github.com/acme/repo/pull/7"');
+      expect(html).toContain('#7');
+    } finally {
+      fakePrs.delete('feat-a');
+    }
+  });
+
+  test('el orden del dashboard respeta el sort configurado', async () => {
+    const a = await idOf('feat-a');
+    const b = await idOf('feat-b');
+
+    await setSort('created-asc');
+    let html = await (await app.request('/')).text();
+    expect(html.indexOf(`data-wt="${a}"`)).toBeLessThan(html.indexOf(`data-wt="${b}"`));
+
+    await setSort('created-desc');
+    html = await (await app.request('/')).text();
+    expect(html.indexOf(`data-wt="${a}"`)).toBeGreaterThan(html.indexOf(`data-wt="${b}"`));
   });
 });

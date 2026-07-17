@@ -46,6 +46,12 @@ El botón **Crear PR** pushea la rama (`git push -u origin`) y crea el PR contra
 
 El botón **Eliminar** quita el worktree (`git worktree remove`) cuando ya no lo necesitas, con confirmación y un checkbox opcional para borrar también la rama local. Si hay cambios sin commitear pide forzar explícitamente. Antes de borrar se detienen los procesos asociados (difit y dev server). El worktree principal está protegido.
 
+### Ordenar y archivar (para el daily)
+
+Para explicar en un daily en qué estuviste trabajando, el dashboard tiene un selector **"ordenar"** con cuatro criterios: **último commit** (↓/↑) y **creación** del worktree (↓/↑). El orden se guarda por repo. Cada tarjeta muestra hace cuánto se creó y cuándo fue el último commit, y —si existe— un badge con el **PR** de la rama (`PR #N · estado`, consultado en vivo con `gh`, best-effort).
+
+Cuando terminás con un worktree podés **Archivar**lo: pasa a una sección **Archivados** colapsable al pie, sin borrarlo del disco (podés **Desarchivar** cuando quieras). El default es ordenar por último commit descendente, así lo más reciente queda arriba.
+
 ### Rama base
 
 En la cabecera del dashboard hay un selector **"comparar contra"** con las ramas locales del repo. Al cambiarlo, la elección se guarda en `~/.config/wtv/config.json` (keyed por repo) y se recuerda en próximos arranques. Precedencia:
@@ -72,9 +78,11 @@ Todo el contenido agregado está disponible en URLs estables:
 |---|---|
 | `GET /api/review.json` | Todos los worktrees con metadata, archivos y **diffs completos** (JSON) |
 | `GET /review.md` | Lo mismo en Markdown legible |
-| `GET /api/worktrees.json` | Lista ligera sin diffs (para sondeo rápido; incluye el estado `run` de cada worktree) |
+| `GET /api/worktrees.json` | Lista ligera sin diffs (para sondeo rápido; incluye `run`, `createdAt`, `lastCommitAt`, `archived` y `pr` de cada worktree) |
 | `POST /wt/:id/run/start` · `/run/stop` · `GET /wt/:id/run` | Levantar/detener/consultar el dev server de un worktree |
 | `POST /wt/:id/run-command` | Fijar (`{ command }`) o limpiar (`""`) el comando propio de ese worktree |
+| `POST /api/sort` | Cambiar el orden del dashboard (`{ sort: 'modified-desc' \| 'modified-asc' \| 'created-desc' \| 'created-asc' }`) |
+| `POST /wt/:id/archive` | Archivar/desarchivar un worktree (`{ archived: boolean }`) |
 | `POST /wt/:id/pr` | Push + crear el PR con gh (`{ url, created, warning? }`) |
 | `POST /wt/:id/delete` | Eliminar el worktree (`{ deleteBranch?, force? }`) |
 
@@ -103,7 +111,7 @@ npm run build       # tsup → dist/
 npm run dev         # tsx src/cli.ts
 ```
 
-Arquitectura: `src/worktrees.ts` (enumeración), `src/git-summary.ts` (diff/resumen por worktree vía git), `src/difit-manager.ts` (ciclo de vida de los difit hijos), `src/run-manager.ts` (dev servers por worktree), `src/pr.ts` (push + gh pr create), `src/hub-server.ts` + `src/render.ts` (hub HTTP, dashboard y endpoints), `src/cli.ts` (entrada).
+Arquitectura: `src/worktrees.ts` (enumeración), `src/git-summary.ts` (diff/resumen por worktree vía git), `src/worktree-dates.ts` (fechas de creación/último commit para ordenar), `src/difit-manager.ts` (ciclo de vida de los difit hijos), `src/run-manager.ts` (dev servers por worktree), `src/pr.ts` (push + gh pr create + lookup del PR), `src/hub-server.ts` + `src/render.ts` (hub HTTP, dashboard y endpoints), `src/cli.ts` (entrada).
 
 ## Licencia
 

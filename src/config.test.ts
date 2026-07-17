@@ -4,13 +4,18 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import {
   configPath,
+  isWorktreeArchived,
+  readRepoArchived,
   readRepoBase,
   readRepoMode,
   readRepoRunCommand,
+  readRepoSort,
   readRepoWorktreeRunCommand,
+  writeRepoArchived,
   writeRepoBase,
   writeRepoMode,
   writeRepoRunCommand,
+  writeRepoSort,
   writeRepoWorktreeRunCommand,
 } from './config.js';
 
@@ -86,6 +91,38 @@ describe('config', () => {
     writeRepoWorktreeRunCommand('/repo/uno', 'wt-api', null);
     expect(readRepoWorktreeRunCommand('/repo/uno', 'wt-api')).toBeNull();
     expect(readRepoWorktreeRunCommand('/repo/uno', 'wt-web')).toBe('cd apps/web && npm run dev');
+  });
+
+  test('readRepoSort devuelve modified-desc por defecto y hace round-trip', () => {
+    expect(readRepoSort('/repo/uno')).toBe('modified-desc');
+    writeRepoSort('/repo/uno', 'created-asc');
+    expect(readRepoSort('/repo/uno')).toBe('created-asc');
+    // no pisa base ni comando del mismo repo
+    expect(readRepoBase('/repo/uno')).toBe('main');
+    expect(readRepoRunCommand('/repo/uno')).toBe('cd projects/suite && npm run dev');
+  });
+
+  test('archivar/desarchivar worktrees: round-trip por id', () => {
+    expect(readRepoArchived('/repo/uno')).toEqual([]);
+    expect(isWorktreeArchived('/repo/uno', 'wt-api')).toBe(false);
+
+    writeRepoArchived('/repo/uno', 'wt-api', true);
+    writeRepoArchived('/repo/uno', 'wt-web', true);
+    expect(isWorktreeArchived('/repo/uno', 'wt-api')).toBe(true);
+    expect(readRepoArchived('/repo/uno').sort()).toEqual(['wt-api', 'wt-web']);
+
+    // archivar dos veces el mismo id no lo duplica
+    writeRepoArchived('/repo/uno', 'wt-api', true);
+    expect(readRepoArchived('/repo/uno').sort()).toEqual(['wt-api', 'wt-web']);
+
+    // desarchivar quita solo ese id
+    writeRepoArchived('/repo/uno', 'wt-api', false);
+    expect(isWorktreeArchived('/repo/uno', 'wt-api')).toBe(false);
+    expect(readRepoArchived('/repo/uno')).toEqual(['wt-web']);
+
+    // no toca el orden ni la base guardados
+    expect(readRepoSort('/repo/uno')).toBe('created-asc');
+    expect(readRepoBase('/repo/uno')).toBe('main');
   });
 
   test('config corrupta se trata como vacía', () => {
