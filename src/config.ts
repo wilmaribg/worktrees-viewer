@@ -9,8 +9,15 @@ export type ReviewMode = 'pr' | 'wip';
  * Config global del usuario: ~/.config/wtv/config.json (o $XDG_CONFIG_HOME/wtv/).
  * Forma: { repos: { "<ruta-repo>": { base: "develop", mode: "pr" } } }
  */
+interface RepoEntry {
+  base?: string;
+  mode?: ReviewMode;
+  /** Comando shell que levanta el proyecto (se ejecuta en la raíz del worktree). */
+  runCommand?: string;
+}
+
 interface WtvConfig {
-  repos?: Record<string, { base?: string; mode?: ReviewMode }>;
+  repos?: Record<string, RepoEntry>;
 }
 
 export function configPath(): string {
@@ -46,7 +53,16 @@ export function writeRepoMode(repoRoot: string, mode: ReviewMode): void {
   writeRepoEntry(repoRoot, { mode });
 }
 
-function writeRepoEntry(repoRoot: string, entry: { base?: string; mode?: ReviewMode }): void {
+/** Comando de arranque guardado para el repo, o null si no hay. */
+export function readRepoRunCommand(repoRoot: string): string | null {
+  return readConfig().repos?.[repoRoot]?.runCommand ?? null;
+}
+
+export function writeRepoRunCommand(repoRoot: string, runCommand: string): void {
+  writeRepoEntry(repoRoot, { runCommand });
+}
+
+function writeRepoEntry(repoRoot: string, entry: RepoEntry): void {
   const config = readConfig();
   config.repos = { ...config.repos, [repoRoot]: { ...config.repos?.[repoRoot], ...entry } };
   fs.mkdirSync(path.dirname(configPath()), { recursive: true });

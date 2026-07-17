@@ -3,6 +3,7 @@ import { DifitManager } from './difit-manager.js';
 import { tryGit } from './git.js';
 import { startHub } from './hub-server.js';
 import { openBrowser } from './open-browser.js';
+import { RunManager } from './run-manager.js';
 
 const DEFAULT_HUB_PORT = 4900;
 
@@ -37,9 +38,10 @@ async function main(): Promise<void> {
   const difit = new DifitManager({
     extraArgs: opts.difitArgs ? opts.difitArgs.split(/\s+/).filter(Boolean) : [],
   });
+  const run = new RunManager();
 
   const server = startHub(
-    { repoRoot, base: opts.base, difit },
+    { repoRoot, base: opts.base, difit, run },
     {
       port: Number(opts.port),
       host: opts.host,
@@ -57,7 +59,7 @@ async function main(): Promise<void> {
   const shutdown = (): void => {
     if (closing) return;
     closing = true;
-    void difit.stopAll().then(() => {
+    void Promise.all([difit.stopAll(), run.stopAll()]).then(() => {
       server.close();
       process.exit(0);
     });

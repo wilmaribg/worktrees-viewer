@@ -16,6 +16,34 @@ wtv
 
 Se abre el navegador con el dashboard: una tarjeta por worktree con rama, base, ahead/behind, archivos cambiados, `+/-` y si hay cambios sin commitear. El botón **Abrir review** lanza difit para ese worktree mostrando el **diff del PR** (contra el merge-base con la rama base) **más los cambios sin commitear y archivos untracked**.
 
+### Modos de review
+
+El toggle de la cabecera cambia qué se considera "el cambio" en todo el panel (tarjetas, difit y endpoints):
+
+- **Diff del PR**: todo lo que iría en el PR (merge-base con la base → working tree + untracked)
+- **Solo sin commitear**: únicamente tu WIP (HEAD → working tree + untracked)
+
+La elección se guarda por repo. Los agentes pueden forzar un modo puntual con `?mode=pr|wip` en cualquier endpoint.
+
+### Levantar el proyecto desde un worktree
+
+Define una vez el **comando dev** en la cabecera (ej. `cd projects/suite && npm run dev`); queda guardado por repo. Cada tarjeta tiene:
+
+- **▶ Levantar**: ejecuta el comando en ese worktree (en su propio process group)
+- **Abrir app**: aparece cuando wtv detecta la URL del dev server en los logs (`http://localhost:XXXX`)
+- **Detener**: mata el proceso y todos sus hijos
+- **logs**: la salida del comando en texto plano (`/wt/:id/run/logs`)
+
+Así puedes probar los cambios de cada worktree antes de crear el PR. Si levantas varios a la vez, la mayoría de dev servers (vite, quasar, webpack) auto-incrementan el puerto solos.
+
+### Crear el Pull Request
+
+El botón **Crear PR** pushea la rama (`git push -u origin`) y crea el PR contra tu base configurada con `gh pr create --fill` (título/cuerpo desde los commits). Si el PR ya existe, abre el existente. Requiere [gh CLI](https://cli.github.com) autenticado. Si hay cambios sin commitear te avisa que no van en el PR.
+
+### Eliminar un worktree
+
+El botón **Eliminar** quita el worktree (`git worktree remove`) cuando ya no lo necesitas, con confirmación y un checkbox opcional para borrar también la rama local. Si hay cambios sin commitear pide forzar explícitamente. Antes de borrar se detienen los procesos asociados (difit y dev server). El worktree principal está protegido.
+
 ### Rama base
 
 En la cabecera del dashboard hay un selector **"comparar contra"** con las ramas locales del repo. Al cambiarlo, la elección se guarda en `~/.config/wtv/config.json` (keyed por repo) y se recuerda en próximos arranques. Precedencia:
@@ -42,7 +70,10 @@ Todo el contenido agregado está disponible en URLs estables:
 |---|---|
 | `GET /api/review.json` | Todos los worktrees con metadata, archivos y **diffs completos** (JSON) |
 | `GET /review.md` | Lo mismo en Markdown legible |
-| `GET /api/worktrees.json` | Lista ligera sin diffs (para sondeo rápido) |
+| `GET /api/worktrees.json` | Lista ligera sin diffs (para sondeo rápido; incluye el estado `run` de cada worktree) |
+| `POST /wt/:id/run/start` · `/run/stop` · `GET /wt/:id/run` | Levantar/detener/consultar el dev server de un worktree |
+| `POST /wt/:id/pr` | Push + crear el PR con gh (`{ url, created, warning? }`) |
+| `POST /wt/:id/delete` | Eliminar el worktree (`{ deleteBranch?, force? }`) |
 
 Ejemplo con Claude Code:
 
@@ -69,7 +100,7 @@ npm run build       # tsup → dist/
 npm run dev         # tsx src/cli.ts
 ```
 
-Arquitectura: `src/worktrees.ts` (enumeración), `src/git-summary.ts` (diff/resumen por worktree vía git), `src/difit-manager.ts` (ciclo de vida de los difit hijos), `src/hub-server.ts` + `src/render.ts` (hub HTTP, dashboard y endpoints), `src/cli.ts` (entrada).
+Arquitectura: `src/worktrees.ts` (enumeración), `src/git-summary.ts` (diff/resumen por worktree vía git), `src/difit-manager.ts` (ciclo de vida de los difit hijos), `src/run-manager.ts` (dev servers por worktree), `src/pr.ts` (push + gh pr create), `src/hub-server.ts` + `src/render.ts` (hub HTTP, dashboard y endpoints), `src/cli.ts` (entrada).
 
 ## Licencia
 

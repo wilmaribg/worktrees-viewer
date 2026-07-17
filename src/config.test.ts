@@ -2,7 +2,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
-import { configPath, readRepoBase, readRepoMode, writeRepoBase, writeRepoMode } from './config.js';
+import {
+  configPath,
+  readRepoBase,
+  readRepoMode,
+  readRepoRunCommand,
+  writeRepoBase,
+  writeRepoMode,
+  writeRepoRunCommand,
+} from './config.js';
 
 let tmpHome: string;
 const prevXdg = process.env['XDG_CONFIG_HOME'];
@@ -48,6 +56,15 @@ describe('config', () => {
     // no pisa la base guardada del mismo repo
     expect(readRepoBase('/repo/uno')).toBe('main');
     writeRepoMode('/repo/uno', 'pr');
+    expect(readRepoMode('/repo/uno')).toBe('pr');
+  });
+
+  test('readRepoRunCommand devuelve null por defecto y hace round-trip', () => {
+    expect(readRepoRunCommand('/repo/uno')).toBeNull();
+    writeRepoRunCommand('/repo/uno', 'cd projects/suite && npm run dev');
+    expect(readRepoRunCommand('/repo/uno')).toBe('cd projects/suite && npm run dev');
+    // no pisa base ni mode del mismo repo
+    expect(readRepoBase('/repo/uno')).toBe('main');
     expect(readRepoMode('/repo/uno')).toBe('pr');
   });
 
