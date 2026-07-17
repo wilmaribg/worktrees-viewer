@@ -4,9 +4,11 @@ import {
   readRepoBase,
   readRepoMode,
   readRepoRunCommand,
+  readRepoWorktreeRunCommand,
   writeRepoBase,
   writeRepoMode,
   writeRepoRunCommand,
+  writeRepoWorktreeRunCommand,
   type ReviewMode,
 } from './config.js';
 import type { DifitInstance } from './difit-manager.js';
@@ -62,6 +64,8 @@ export interface WorktreeReview {
   difitUrl: string | null;
   /** Estado del comando de arranque (dev server) para este worktree. */
   run: { running: boolean; url: string | null; pid: number | null; exitCode: number | null } | null;
+  /** Comando propio de este worktree (monorepo), o null si usa el general. */
+  runCommandOverride: string | null;
 }
 
 export interface ReviewAggregate {
@@ -111,6 +115,7 @@ async function aggregate(ctx: HubContext, includeDiff: boolean, mode: ReviewMode
         ...(includeDiff ? { diff } : {}),
         difitUrl: ctx.difit.liveUrl(wt.id),
         run: toRunInfo(ctx.run.status(wt.id)),
+        runCommandOverride: readRepoWorktreeRunCommand(ctx.repoRoot, wt.id),
       };
     }),
   );
@@ -194,10 +199,23 @@ export function createHubApp(ctx: HubContext): HubApp {
     return c.json({ ok: true, command });
   });
 
+  // Override de comando por worktree (monorepo). Vacío → borra el override.
+  app.post('/wt/:id/run-command', async (c) => {
+    const id = c.req.param('id');
+    const wt = await findWorktree(ctx, id);
+    if (!wt) return c.text(`worktree desconocido: ${id}`, 404);
+    const body = (await c.req.json().catch(() => ({}))) as { command?: unknown };
+    const command = typeof body.command === 'string' ? body.command.trim() : '';
+    writeRepoWorktreeRunCommand(ctx.repoRoot, id, command || null);
+    return c.json({ ok: true, command: command || null });
+  });
+
   app.post('/wt/:id/run/start', async (c) => {
-    const wt = await findWorktree(ctx, c.req.param('id'));
-    if (!wt) return c.text(`worktree desconocido: ${c.req.param('id')}`, 404);
-    const command = readRepoRunCommand(ctx.repoRoot);
+    const id = c.req.param('id');
+    const wt = await findWorktree(ctx, id);
+    if (!wt) return c.text(`worktree desconocido: ${id}`, 404);
+    // override propio del worktree → comando general del repo
+    const command = readRepoWorktreeRunCommand(ctx.repoRoot, id) ?? readRepoRunCommand(ctx.repoRoot);
     if (!command) {
       return c.json({ error: 'no hay comando de arranque configurado; defínelo en el dashboard' }, 400);
     }

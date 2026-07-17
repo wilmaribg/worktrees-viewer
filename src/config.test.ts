@@ -7,9 +7,11 @@ import {
   readRepoBase,
   readRepoMode,
   readRepoRunCommand,
+  readRepoWorktreeRunCommand,
   writeRepoBase,
   writeRepoMode,
   writeRepoRunCommand,
+  writeRepoWorktreeRunCommand,
 } from './config.js';
 
 let tmpHome: string;
@@ -66,6 +68,24 @@ describe('config', () => {
     // no pisa base ni mode del mismo repo
     expect(readRepoBase('/repo/uno')).toBe('main');
     expect(readRepoMode('/repo/uno')).toBe('pr');
+  });
+
+  test('override de comando por worktree: round-trip y limpieza', () => {
+    // sin override cae en null (el caller decide usar el general)
+    expect(readRepoWorktreeRunCommand('/repo/uno', 'wt-api')).toBeNull();
+
+    writeRepoWorktreeRunCommand('/repo/uno', 'wt-api', 'cd apps/api && npm start');
+    writeRepoWorktreeRunCommand('/repo/uno', 'wt-web', 'cd apps/web && npm run dev');
+    expect(readRepoWorktreeRunCommand('/repo/uno', 'wt-api')).toBe('cd apps/api && npm start');
+    expect(readRepoWorktreeRunCommand('/repo/uno', 'wt-web')).toBe('cd apps/web && npm run dev');
+    // no toca el comando general ni otros campos
+    expect(readRepoRunCommand('/repo/uno')).toBe('cd projects/suite && npm run dev');
+    expect(readRepoBase('/repo/uno')).toBe('main');
+
+    // null borra el override (vuelve al general)
+    writeRepoWorktreeRunCommand('/repo/uno', 'wt-api', null);
+    expect(readRepoWorktreeRunCommand('/repo/uno', 'wt-api')).toBeNull();
+    expect(readRepoWorktreeRunCommand('/repo/uno', 'wt-web')).toBe('cd apps/web && npm run dev');
   });
 
   test('config corrupta se trata como vacía', () => {
