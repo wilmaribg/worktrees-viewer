@@ -88,7 +88,39 @@ function cardHtml(wt: WorktreeReview): string {
 </article>`;
 }
 
-export function renderDashboardHtml(data: ReviewAggregate): string {
+export interface DashboardOptions {
+  /** Ramas locales del repo para el selector de base. */
+  branches: string[];
+  /** Base efectiva actual (flag, config o auto-detectada). */
+  effectiveBase: string | null;
+  /** true si la base viene del flag --base (el selector se deshabilita). */
+  baseLocked: boolean;
+}
+
+function baseSelectorHtml(opts: DashboardOptions): string {
+  const options = [...opts.branches];
+  if (opts.effectiveBase && !options.includes(opts.effectiveBase)) options.unshift(opts.effectiveBase);
+  const optionTags = options
+    .map((b) => `<option value="${esc(b)}"${b === opts.effectiveBase ? ' selected' : ''}>${esc(b)}</option>`)
+    .join('');
+  const lockedNote = opts.baseLocked ? ' <span title="fijada por --base">🔒</span>' : '';
+  return `<label class="base">comparar contra
+    <select id="base-select"${opts.baseLocked ? ' disabled' : ''}>${optionTags}</select>${lockedNote}
+  </label>
+  <script>
+    document.getElementById('base-select').addEventListener('change', async (e) => {
+      const res = await fetch('/api/base', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ base: e.target.value }),
+      });
+      if (res.ok) location.reload();
+      else alert((await res.json()).error ?? 'no se pudo cambiar la base');
+    });
+  </script>`;
+}
+
+export function renderDashboardHtml(data: ReviewAggregate, opts: DashboardOptions): string {
   const cards = data.worktrees.map(cardHtml).join('\n');
   return `<!doctype html>
 <html lang="es">
@@ -103,7 +135,10 @@ export function renderDashboardHtml(data: ReviewAggregate): string {
   body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--fg); }
   .wrap { max-width: 1080px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
   h1 { font-size: 1.3rem; margin: 0; }
-  .top { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: .4rem; }
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: .4rem; flex-wrap: wrap; }
+  .controls { display: flex; align-items: center; gap: .8rem; }
+  .base { font-size: .82rem; color: var(--muted); display: flex; align-items: center; gap: .45rem; }
+  .base select { background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 7px; padding: .35rem .5rem; font-size: .82rem; }
   .repo { color: var(--muted); font-size: .85rem; margin: 0 0 1.5rem; overflow-wrap: anywhere; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1rem; }
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: .55rem; }
@@ -128,7 +163,10 @@ export function renderDashboardHtml(data: ReviewAggregate): string {
 <div class="wrap">
   <div class="top">
     <h1>🌳 worktrees-viewer</h1>
-    <a class="btn ghost" href="/">Refrescar</a>
+    <div class="controls">
+      ${baseSelectorHtml(opts)}
+      <a class="btn ghost" href="/">Refrescar</a>
+    </div>
   </div>
   <p class="repo">${esc(data.repo)} · ${data.worktrees.length} worktree(s) · ${esc(data.generatedAt)}</p>
   <div class="grid">

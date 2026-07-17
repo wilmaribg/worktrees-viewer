@@ -1,3 +1,4 @@
+export { configPath, readRepoBase, writeRepoBase } from './config.js';
 export { DifitManager, type DifitInstance, type DifitManagerOptions } from './difit-manager.js';
 export {
   detectBaseBranch,

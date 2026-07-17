@@ -1,7 +1,9 @@
 import { serve, type ServerType } from '@hono/node-server';
 import { Hono } from 'hono';
+import { readRepoBase, writeRepoBase } from './config.js';
 import type { DifitInstance } from './difit-manager.js';
 import { detectBaseBranch, summarizeWorktree, type WorktreeSummary } from './git-summary.js';
+import { runGit, tryGit } from './git.js';
 import { renderDashboardHtml, renderReviewMarkdown } from './render.js';
 import { listWorktrees, type Worktree } from './worktrees.js';
 
@@ -9,6 +11,7 @@ import { listWorktrees, type Worktree } from './worktrees.js';
 export interface DifitLauncher {
   ensure(wt: Worktree, base: string | null): Promise<DifitInstance>;
   liveUrl(wtId: string): string | null;
+  stopAll(): Promise<void>;
 }
 
 export interface HubContext {
@@ -45,15 +48,21 @@ export interface ReviewAggregate {
 
 export type HubApp = Hono;
 
+/** Base efectiva: flag --base → config guardada del usuario → auto-detección (undefined). */
+function resolveBaseOverride(ctx: HubContext): string | undefined {
+  return ctx.base ?? readRepoBase(ctx.repoRoot) ?? undefined;
+}
+
 async function aggregate(ctx: HubContext, includeDiff: boolean): Promise<ReviewAggregate> {
   const all = await listWorktrees(ctx.repoRoot);
   const wts = all.filter((w) => !w.bare);
   wts.sort((a, b) => Number(b.isMain) - Number(a.isMain) || (a.branch ?? a.id).localeCompare(b.branch ?? b.id));
 
+  const baseOverride = resolveBaseOverride(ctx);
   const worktrees = await Promise.all(
     wts.map(async (wt): Promise<WorktreeReview> => {
       const { diff, dirty, ...summary } = await summarizeWorktree(wt, {
-        base: ctx.base,
+        base: baseOverride,
         maxDiffBytes: ctx.maxDiffBytes,
       });
       return {
@@ -80,7 +89,25 @@ export function createHubApp(ctx: HubContext): HubApp {
 
   app.get('/', async (c) => {
     const data = await aggregate(ctx, false);
-    return c.html(renderDashboardHtml(data));
+    const branches = (await runGit(['branch', '--format=%(refname:short)'], ctx.repoRoot))
+      .split('\n')
+      .filter(Boolean);
+    const effectiveBase = resolveBaseOverride(ctx) ?? (await detectBaseBranch(ctx.repoRoot));
+    return c.html(renderDashboardHtml(data, { branches, effectiveBase, baseLocked: Boolean(ctx.base) }));
+  });
+
+  app.post('/api/base', async (c) => {
+    if (ctx.base) {
+      return c.json({ error: 'la base está fijada por el flag --base; relanza sin él para cambiarla' }, 409);
+    }
+    const body = (await c.req.json().catch(() => ({}))) as { base?: unknown };
+    const base = typeof body.base === 'string' ? body.base.trim() : '';
+    if (!base) return c.json({ error: 'falta "base"' }, 400);
+    const exists = await tryGit(['rev-parse', '--verify', '--quiet', `${base}^{commit}`], ctx.repoRoot);
+    if (exists === null) return c.json({ error: `la rama "${base}" no existe en el repo` }, 400);
+    writeRepoBase(ctx.repoRoot, base);
+    await ctx.difit.stopAll(); // las instancias vivas quedaron calculadas con la base vieja
+    return c.json({ ok: true, base });
   });
 
   app.get('/api/worktrees.json', async (c) => c.json(await aggregate(ctx, false)));
@@ -97,7 +124,7 @@ export function createHubApp(ctx: HubContext): HubApp {
     const wts = await listWorktrees(ctx.repoRoot);
     const wt = wts.find((w) => w.id === id && !w.bare);
     if (!wt) return c.text(`worktree desconocido: ${id}`, 404);
-    const base = await detectBaseBranch(wt.path, ctx.base);
+    const base = await detectBaseBranch(wt.path, resolveBaseOverride(ctx));
     const inst = await ctx.difit.ensure(wt, base);
     return c.redirect(inst.url, 302);
   });

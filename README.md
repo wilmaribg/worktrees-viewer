@@ -16,13 +16,21 @@ wtv
 
 Se abre el navegador con el dashboard: una tarjeta por worktree con rama, base, ahead/behind, archivos cambiados, `+/-` y si hay cambios sin commitear. El botón **Abrir review** lanza difit para ese worktree mostrando el **diff del PR** (contra el merge-base con la rama base) **más los cambios sin commitear y archivos untracked**.
 
+### Rama base
+
+En la cabecera del dashboard hay un selector **"comparar contra"** con las ramas locales del repo. Al cambiarlo, la elección se guarda en `~/.config/wtv/config.json` (keyed por repo) y se recuerda en próximos arranques. Precedencia:
+
+1. Flag `--base <rama>` (fija la base para esa sesión; el selector se muestra con 🔒)
+2. Base guardada en la config del usuario para ese repo
+3. Auto-detección: `origin/HEAD` → `main` → `master`
+
 ### Flags
 
 | Flag | Default | Descripción |
 |---|---|---|
 | `-p, --port <port>` | 4900 | Puerto del hub |
 | `--host <host>` | 127.0.0.1 | Host donde escuchar |
-| `-b, --base <branch>` | auto | Rama base para los diffs (auto: `origin/HEAD` → `main` → `master`) |
+| `-b, --base <branch>` | auto | Rama base para los diffs (fija la base y deshabilita el selector) |
 | `--no-open` | — | No abrir el navegador |
 | `--difit-args "<args>"` | — | Argumentos extra para las instancias de difit |
 
