@@ -1,22 +1,30 @@
 import { serve, type ServerType } from '@hono/node-server';
 import { Hono } from 'hono';
 import {
+  isWorktreeArchived,
   readRepoBase,
   readRepoMode,
   readRepoRunCommand,
+  readRepoSort,
   readRepoWorktreeRunCommand,
+  WORKTREE_SORTS,
+  writeRepoArchived,
   writeRepoBase,
   writeRepoMode,
   writeRepoRunCommand,
+  writeRepoSort,
   writeRepoWorktreeRunCommand,
   type ReviewMode,
+  type WorktreeSort,
 } from './config.js';
 import type { DifitInstance } from './difit-manager.js';
-import { createPullRequest, type PrResult } from './pr.js';
+import { openInEditor } from './editor.js';
+import { createPullRequest, lookupPullRequest, type PrInfo, type PrResult } from './pr.js';
 import type { RunStatus } from './run-manager.js';
 import { detectBaseBranch, summarizeWorktree, type WorktreeSummary } from './git-summary.js';
 import { runGit, tryGit } from './git.js';
 import { renderDashboardHtml, renderReviewMarkdown } from './render.js';
+import { worktreeDates } from './worktree-dates.js';
 import { listWorktrees, type Worktree } from './worktrees.js';
 
 /** Interfaz mínima que el hub necesita del DifitManager (inyectable en tests). */
@@ -44,6 +52,10 @@ export interface HubContext {
   run: RunLauncher;
   /** Crea el PR (push + gh). Inyectable en tests; por defecto usa gh CLI. */
   createPr?: (wt: Worktree, base: string | null) => Promise<PrResult>;
+  /** Busca el PR de una rama (best-effort). Inyectable en tests; por defecto gh CLI. */
+  lookupPr?: (branch: string, cwd: string) => Promise<PrInfo | null>;
+  /** Abre un worktree en el editor. Inyectable en tests; por defecto `code <ruta>`. */
+  openEditor?: (worktreePath: string) => Promise<void>;
   /** Tope de bytes por diff en los endpoints agregados. */
   maxDiffBytes?: number;
 }
@@ -66,6 +78,14 @@ export interface WorktreeReview {
   run: { running: boolean; url: string | null; pid: number | null; exitCode: number | null } | null;
   /** Comando propio de este worktree (monorepo), o null si usa el general. */
   runCommandOverride: string | null;
+  /** ISO de creación del worktree (para ordenar), o null. */
+  createdAt: string | null;
+  /** ISO del último commit (para ordenar por "última modificación"), o null. */
+  lastCommitAt: string | null;
+  /** true si el usuario lo archivó (se muestra colapsado). */
+  archived: boolean;
+  /** PR de la rama si existe (best-effort vía gh), o null. */
+  pr: PrInfo | null;
 }
 
 export interface ReviewAggregate {
@@ -97,11 +117,11 @@ async function aggregate(ctx: HubContext, includeDiff: boolean, mode: ReviewMode
   const baseOverride = resolveBaseOverride(ctx);
   const worktrees = await Promise.all(
     wts.map(async (wt): Promise<WorktreeReview> => {
-      const { diff, dirty, ...summary } = await summarizeWorktree(wt, {
-        base: baseOverride,
-        maxDiffBytes: ctx.maxDiffBytes,
-        mode,
-      });
+      const [{ diff, dirty, ...summary }, dates, pr] = await Promise.all([
+        summarizeWorktree(wt, { base: baseOverride, maxDiffBytes: ctx.maxDiffBytes, mode }),
+        worktreeDates(wt.path),
+        resolvePr(ctx, wt),
+      ]);
       return {
         id: wt.id,
         path: wt.path,
@@ -116,11 +136,32 @@ async function aggregate(ctx: HubContext, includeDiff: boolean, mode: ReviewMode
         difitUrl: ctx.difit.liveUrl(wt.id),
         run: toRunInfo(ctx.run.status(wt.id)),
         runCommandOverride: readRepoWorktreeRunCommand(ctx.repoRoot, wt.id),
+        createdAt: dates.createdAt,
+        lastCommitAt: dates.lastCommitAt,
+        archived: isWorktreeArchived(ctx.repoRoot, wt.id),
+        pr,
       };
     }),
   );
 
   return { repo: ctx.repoRoot, generatedAt: new Date().toISOString(), mode, worktrees };
+}
+
+// Cache en memoria de PRs por rama@head; los refrescos del dashboard no re-spawnean gh.
+const prCache = new Map<string, { pr: PrInfo | null; at: number }>();
+const PR_TTL_MS = 60_000;
+
+/** PR de un worktree: usa el lookup inyectado (sin cache) o gh real (con cache). */
+async function resolvePr(ctx: HubContext, wt: Worktree): Promise<PrInfo | null> {
+  // el worktree principal es el tronco: no tiene PR propio, evitamos spawnear gh
+  if (!wt.branch || wt.isMain) return null;
+  if (ctx.lookupPr) return ctx.lookupPr(wt.branch, wt.path);
+  const key = `${wt.branch}@${wt.head}`;
+  const hit = prCache.get(key);
+  if (hit && Date.now() - hit.at < PR_TTL_MS) return hit.pr;
+  const pr = await lookupPullRequest(wt.branch, wt.path);
+  prCache.set(key, { pr, at: Date.now() });
+  return pr;
 }
 
 export function createHubApp(ctx: HubContext): HubApp {
@@ -140,6 +181,7 @@ export function createHubApp(ctx: HubContext): HubApp {
         baseLocked: Boolean(ctx.base),
         mode,
         runCommand: readRepoRunCommand(ctx.repoRoot),
+        sort: readRepoSort(ctx.repoRoot),
       }),
     );
   });
@@ -191,12 +233,46 @@ export function createHubApp(ctx: HubContext): HubApp {
     return c.redirect(inst.url, 302);
   });
 
+  // Abre el worktree en el editor (por comando, no deep link: no cierra otras ventanas).
+  app.post('/wt/:id/open-editor', async (c) => {
+    const id = c.req.param('id');
+    const wt = await findWorktree(ctx, id);
+    if (!wt) return c.text(`worktree desconocido: ${id}`, 404);
+    try {
+      await (ctx.openEditor ?? openInEditor)(wt.path);
+      return c.json({ ok: true });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
   app.post('/api/run-command', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as { command?: unknown };
     const command = typeof body.command === 'string' ? body.command.trim() : '';
     if (!command) return c.json({ error: 'falta "command"' }, 400);
     writeRepoRunCommand(ctx.repoRoot, command);
     return c.json({ ok: true, command });
+  });
+
+  app.post('/api/sort', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { sort?: unknown };
+    const sort = body.sort;
+    if (typeof sort !== 'string' || !WORKTREE_SORTS.includes(sort as WorktreeSort)) {
+      return c.json({ error: `sort inválido; usa uno de: ${WORKTREE_SORTS.join(', ')}` }, 400);
+    }
+    writeRepoSort(ctx.repoRoot, sort as WorktreeSort);
+    return c.json({ ok: true, sort });
+  });
+
+  // Archivar / desarchivar un worktree (se muestra en una sección colapsada).
+  app.post('/wt/:id/archive', async (c) => {
+    const id = c.req.param('id');
+    const wt = await findWorktree(ctx, id);
+    if (!wt) return c.text(`worktree desconocido: ${id}`, 404);
+    const body = (await c.req.json().catch(() => ({}))) as { archived?: unknown };
+    const archived = body.archived === true;
+    writeRepoArchived(ctx.repoRoot, id, archived);
+    return c.json({ ok: true, archived });
   });
 
   // Override de comando por worktree (monorepo). Vacío → borra el override.

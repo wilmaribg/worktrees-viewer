@@ -17,6 +17,43 @@ export function extractPrUrl(text: string): string | null {
   return PR_URL_RE.exec(text)?.[0] ?? null;
 }
 
+/** Info mínima de un PR abierto/mergeado para mostrar en la tarjeta. */
+export interface PrInfo {
+  url: string;
+  /** OPEN | MERGED | CLOSED (lo que reporta gh). */
+  state: string;
+  number: number;
+}
+
+/** Runner de gh inyectable (para tests); devuelve stdout. */
+export type GhRunner = (args: string[], cwd: string) => Promise<string>;
+
+const TIMEOUT_MS = 5000;
+
+async function ghJson(args: string[], cwd: string): Promise<string> {
+  const { stdout } = await execFileAsync('gh', args, { cwd, timeout: TIMEOUT_MS, maxBuffer: 1024 * 1024 });
+  return stdout;
+}
+
+/**
+ * Busca el PR de una rama con `gh pr view`. Best-effort: cualquier fallo
+ * (sin PR, gh ausente, offline, JSON inválido) devuelve null.
+ */
+export async function lookupPullRequest(
+  branch: string,
+  cwd: string,
+  gh: GhRunner = ghJson,
+): Promise<PrInfo | null> {
+  try {
+    const out = await gh(['pr', 'view', branch, '--json', 'url,state,number'], cwd);
+    const parsed = JSON.parse(out) as Partial<PrInfo>;
+    if (typeof parsed.url !== 'string' || typeof parsed.number !== 'number') return null;
+    return { url: parsed.url, state: String(parsed.state ?? ''), number: parsed.number };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Pushea la rama del worktree y crea el PR con gh CLI (--fill: título/cuerpo
  * desde los commits). Si el PR ya existe, devuelve su URL con created=false.

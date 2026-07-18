@@ -5,6 +5,17 @@ import path from 'node:path';
 /** Alcance del review: diff del PR completo o solo cambios sin commitear. */
 export type ReviewMode = 'pr' | 'wip';
 
+/** Criterio de orden del dashboard: por creación o último commit, asc/desc. */
+export type WorktreeSort = 'created-desc' | 'created-asc' | 'modified-desc' | 'modified-asc';
+
+/** Valores válidos de orden (para validar el input de la ruta). */
+export const WORKTREE_SORTS: readonly WorktreeSort[] = [
+  'created-desc',
+  'created-asc',
+  'modified-desc',
+  'modified-asc',
+];
+
 /**
  * Config global del usuario: ~/.config/wtv/config.json (o $XDG_CONFIG_HOME/wtv/).
  * Forma: { repos: { "<ruta-repo>": { base: "develop", mode: "pr" } } }
@@ -16,6 +27,10 @@ interface RepoEntry {
   runCommand?: string;
   /** Overrides por worktree (keyed por id): comando propio para monorepos. */
   worktreeRunCommands?: Record<string, string>;
+  /** Orden del dashboard (default 'modified-desc'). */
+  sort?: WorktreeSort;
+  /** Ids de worktrees archivados (se muestran en una sección colapsada). */
+  archivedWorktrees?: string[];
 }
 
 interface WtvConfig {
@@ -77,6 +92,31 @@ export function writeRepoWorktreeRunCommand(repoRoot: string, wtId: string, comm
   if (command === null) delete overrides[wtId];
   else overrides[wtId] = command;
   writeRepoEntry(repoRoot, { worktreeRunCommands: overrides });
+}
+
+/** Orden guardado para el repo ('modified-desc' por defecto). */
+export function readRepoSort(repoRoot: string): WorktreeSort {
+  return readConfig().repos?.[repoRoot]?.sort ?? 'modified-desc';
+}
+
+export function writeRepoSort(repoRoot: string, sort: WorktreeSort): void {
+  writeRepoEntry(repoRoot, { sort });
+}
+
+/** Ids de worktrees archivados para el repo (array vacío si no hay). */
+export function readRepoArchived(repoRoot: string): string[] {
+  return readConfig().repos?.[repoRoot]?.archivedWorktrees ?? [];
+}
+
+export function isWorktreeArchived(repoRoot: string, wtId: string): boolean {
+  return readRepoArchived(repoRoot).includes(wtId);
+}
+
+/** Marca (o desmarca) un worktree como archivado, sin duplicar ids. */
+export function writeRepoArchived(repoRoot: string, wtId: string, archived: boolean): void {
+  const current = readRepoArchived(repoRoot).filter((id) => id !== wtId);
+  const next = archived ? [...current, wtId] : current;
+  writeRepoEntry(repoRoot, { archivedWorktrees: next });
 }
 
 function writeRepoEntry(repoRoot: string, entry: Partial<RepoEntry>): void {

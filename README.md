@@ -38,6 +38,10 @@ Cada tarjeta tiene además su **propio campo de comando**: en un monorepo cada p
 
 Así puedes probar los cambios de cada worktree antes de crear el PR. Si levantas varios a la vez, la mayoría de dev servers (vite, quasar, webpack) auto-incrementan el puerto solos.
 
+### Abrir en VS Code
+
+Cada tarjeta tiene un botón **VS Code** que abre ese worktree en el editor ejecutando `code <ruta>` (por comando, no por deep link `vscode://`: así abre su propia ventana **sin cerrar las que ya tengas abiertas**), por si querés modificar o agregar algo a mano antes de crear el PR. Requiere el comando `code` en el PATH (en VS Code: paleta de comandos → *"Shell Command: Install 'code' command in PATH"*). Para usar otro editor definí `WTV_EDITOR` (p. ej. `WTV_EDITOR=cursor`).
+
 ### Crear el Pull Request
 
 El botón **Crear PR** pushea la rama (`git push -u origin`) y crea el PR contra tu base configurada con `gh pr create --fill` (título/cuerpo desde los commits). Si el PR ya existe, abre el existente. Requiere [gh CLI](https://cli.github.com) autenticado. Si hay cambios sin commitear te avisa que no van en el PR.
@@ -45,6 +49,12 @@ El botón **Crear PR** pushea la rama (`git push -u origin`) y crea el PR contra
 ### Eliminar un worktree
 
 El botón **Eliminar** quita el worktree (`git worktree remove`) cuando ya no lo necesitas, con confirmación y un checkbox opcional para borrar también la rama local. Si hay cambios sin commitear pide forzar explícitamente. Antes de borrar se detienen los procesos asociados (difit y dev server). El worktree principal está protegido.
+
+### Ordenar y archivar (para el daily)
+
+Para explicar en un daily en qué estuviste trabajando, el dashboard tiene un selector **"ordenar"** con cuatro criterios: **último commit** (↓/↑) y **creación** del worktree (↓/↑). El orden se guarda por repo. Cada tarjeta muestra hace cuánto se creó y cuándo fue el último commit, y —si existe— un badge con el **PR** de la rama (`PR #N · estado`, consultado en vivo con `gh`, best-effort).
+
+Cuando terminás con un worktree podés **Archivar**lo: pasa a una sección **Archivados** colapsable al pie, sin borrarlo del disco (podés **Desarchivar** cuando quieras). El default es ordenar por último commit descendente, así lo más reciente queda arriba.
 
 ### Rama base
 
@@ -72,9 +82,12 @@ Todo el contenido agregado está disponible en URLs estables:
 |---|---|
 | `GET /api/review.json` | Todos los worktrees con metadata, archivos y **diffs completos** (JSON) |
 | `GET /review.md` | Lo mismo en Markdown legible |
-| `GET /api/worktrees.json` | Lista ligera sin diffs (para sondeo rápido; incluye el estado `run` de cada worktree) |
+| `GET /api/worktrees.json` | Lista ligera sin diffs (para sondeo rápido; incluye `run`, `createdAt`, `lastCommitAt`, `archived` y `pr` de cada worktree) |
 | `POST /wt/:id/run/start` · `/run/stop` · `GET /wt/:id/run` | Levantar/detener/consultar el dev server de un worktree |
 | `POST /wt/:id/run-command` | Fijar (`{ command }`) o limpiar (`""`) el comando propio de ese worktree |
+| `POST /api/sort` | Cambiar el orden del dashboard (`{ sort: 'modified-desc' \| 'modified-asc' \| 'created-desc' \| 'created-asc' }`) |
+| `POST /wt/:id/archive` | Archivar/desarchivar un worktree (`{ archived: boolean }`) |
+| `POST /wt/:id/open-editor` | Abrir el worktree en el editor (`code <ruta>`, o `$WTV_EDITOR`) |
 | `POST /wt/:id/pr` | Push + crear el PR con gh (`{ url, created, warning? }`) |
 | `POST /wt/:id/delete` | Eliminar el worktree (`{ deleteBranch?, force? }`) |
 
@@ -103,7 +116,7 @@ npm run build       # tsup → dist/
 npm run dev         # tsx src/cli.ts
 ```
 
-Arquitectura: `src/worktrees.ts` (enumeración), `src/git-summary.ts` (diff/resumen por worktree vía git), `src/difit-manager.ts` (ciclo de vida de los difit hijos), `src/run-manager.ts` (dev servers por worktree), `src/pr.ts` (push + gh pr create), `src/hub-server.ts` + `src/render.ts` (hub HTTP, dashboard y endpoints), `src/cli.ts` (entrada).
+Arquitectura: `src/worktrees.ts` (enumeración), `src/git-summary.ts` (diff/resumen por worktree vía git), `src/worktree-dates.ts` (fechas de creación/último commit para ordenar), `src/difit-manager.ts` (ciclo de vida de los difit hijos), `src/run-manager.ts` (dev servers por worktree), `src/pr.ts` (push + gh pr create + lookup del PR), `src/editor.ts` (abrir el worktree en el editor por comando), `src/hub-server.ts` + `src/render.ts` (hub HTTP, dashboard y endpoints), `src/cli.ts` (entrada).
 
 ## Licencia
 

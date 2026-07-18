@@ -11,17 +11,29 @@
     "ai"
   ],
   "license": "MIT",
+  "author": "Wilmar Ibarguen (https://github.com/wilmaribg)",
+  "homepage": "https://github.com/wilmaribg/worktrees-viewer#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wilmaribg/worktrees-viewer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wilmaribg/worktrees-viewer/issues"
+  },
   "type": "module",
   "bin": {
-    "wtv": "./dist/cli.js",
-    "worktrees-viewer": "./dist/cli.js"
+    "wtv": "dist/cli.js",
+    "worktrees-viewer": "dist/cli.js"
   },
-  "main": "./dist/index.js",
+  "main": "dist/index.js",
   "files": [
     "dist"
   ],
   "engines": {
     "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsup",

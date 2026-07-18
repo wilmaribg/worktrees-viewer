@@ -1,4 +1,4 @@
-import type { ReviewMode } from './config.js';
+import type { ReviewMode, WorktreeSort } from './config.js';
 import type { ReviewAggregate, WorktreeReview } from './hub-server.js';
 
 function esc(text: string): string {
@@ -12,6 +12,49 @@ function esc(text: string): string {
 function label(wt: WorktreeReview): string {
   if (wt.branch) return wt.branch;
   return wt.detached ? `detached @ ${wt.head.slice(0, 7)}` : wt.id;
+}
+
+/** Tiempo relativo compacto contra `nowIso` (p. ej. "hace 3h"), o "—". */
+function humanizeAgo(iso: string | null, nowIso: string): string {
+  if (!iso) return '—';
+  const then = Date.parse(iso);
+  const now = Date.parse(nowIso);
+  if (Number.isNaN(then) || Number.isNaN(now)) return '—';
+  const s = Math.max(0, Math.round((now - then) / 1000));
+  if (s < 60) return 'hace segundos';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `hace ${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `hace ${h}h`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `hace ${d}d`;
+  const mo = Math.floor(d / 30);
+  if (mo < 12) return `hace ${mo} ${mo === 1 ? 'mes' : 'meses'}`;
+  return `hace ${Math.floor(mo / 12)} año(s)`;
+}
+
+const PR_STATE_LABELS: Record<string, string> = { OPEN: 'abierto', MERGED: 'merged', CLOSED: 'cerrado' };
+function prStateLabel(state: string): string {
+  return PR_STATE_LABELS[state] ?? state.toLowerCase();
+}
+
+/** Ordena worktrees por la clave elegida; los nulos van siempre al final. */
+function sortWorktrees(list: WorktreeReview[], sort: WorktreeSort): WorktreeReview[] {
+  const desc = sort.endsWith('desc');
+  const created = sort.startsWith('created');
+  const ts = (wt: WorktreeReview): number | null => {
+    const iso = created ? wt.createdAt : wt.lastCommitAt;
+    const ms = iso ? Date.parse(iso) : Number.NaN;
+    return Number.isNaN(ms) ? null : ms;
+  };
+  return [...list].sort((a, b) => {
+    const ka = ts(a);
+    const kb = ts(b);
+    if (ka === null && kb === null) return label(a).localeCompare(label(b));
+    if (ka === null) return 1;
+    if (kb === null) return -1;
+    return desc ? kb - ka : ka - kb;
+  });
 }
 
 // ---------- Markdown (para IA y humanos) ----------
@@ -81,7 +124,7 @@ function runControlsHtml(wt: WorktreeReview): string {
   return `<button class="btn ghost" data-action="start" data-wt="${id}">▶ Levantar</button>${crashed}`;
 }
 
-function cardHtml(wt: WorktreeReview, generalCommand: string | null): string {
+function cardHtml(wt: WorktreeReview, generalCommand: string | null, now: string): string {
   const s = wt.summary;
   const badges: string[] = [];
   if (wt.isMain) badges.push('<span class="badge main">principal</span>');
@@ -99,11 +142,15 @@ function cardHtml(wt: WorktreeReview, generalCommand: string | null): string {
   const canPr = !wt.isMain && !wt.detached && wt.branch !== null;
   const actions: string[] = [
     `<a class="btn" href="/wt/${id}/open" target="_blank" rel="noopener">Abrir review</a>`,
+    `<button class="btn ghost" data-action="editor" data-wt="${id}" title="Abrir este worktree en VS Code">VS Code</button>`,
     runControlsHtml(wt),
   ];
   if (canPr) {
     actions.push(`<button class="btn ghost" data-action="pr" data-wt="${id}">Crear PR</button>`);
   }
+  actions.push(
+    `<button class="btn ghost archive" data-action="archive" data-wt="${id}" data-archived="${wt.archived}">${wt.archived ? 'Desarchivar' : 'Archivar'}</button>`,
+  );
   if (!wt.isMain) {
     actions.push(
       `<button class="btn danger" data-action="delete" data-wt="${id}" data-label="${esc(label(wt))}" data-branch="${esc(wt.branch ?? '')}" data-dirty="${wt.dirty}">Eliminar</button>`,
@@ -115,6 +162,11 @@ function cardHtml(wt: WorktreeReview, generalCommand: string | null): string {
     <input class="wt-command" data-wt="${id}" type="text" value="${esc(wt.runCommandOverride ?? '')}" placeholder="${cmdPlaceholder}" spellcheck="false">
   </label>`;
 
+  const datesLine = `<p class="wt-dates">creado ${humanizeAgo(wt.createdAt, now)} · último commit ${humanizeAgo(wt.lastCommitAt, now)}</p>`;
+  const prLine = wt.pr
+    ? `<p class="wt-pr"><a class="pr-link" href="${esc(wt.pr.url)}" target="_blank" rel="noopener">PR #${wt.pr.number} · ${esc(prStateLabel(wt.pr.state))}</a></p>`
+    : '';
+
   return `<article class="card" data-wt="${id}">
   <header>
     <h2>${esc(label(wt))}</h2>
@@ -122,6 +174,8 @@ function cardHtml(wt: WorktreeReview, generalCommand: string | null): string {
   </header>
   <p class="path" title="${esc(wt.path)}"><code>${esc(wt.path)}</code></p>
   <p class="stats">${baseInfo} · ${s.files.length} archivo(s) <span class="add">+${s.additions}</span> <span class="del">−${s.deletions}</span></p>
+  ${datesLine}
+  ${prLine}
   ${cmdInput}
   <footer>
     ${actions.join('\n    ')}
@@ -140,6 +194,8 @@ export interface DashboardOptions {
   mode: ReviewMode;
   /** Comando de arranque configurado para el repo, o null. */
   runCommand: string | null;
+  /** Orden actual del dashboard. */
+  sort: WorktreeSort;
 }
 
 function modeToggleHtml(mode: ReviewMode): string {
@@ -183,6 +239,30 @@ function baseSelectorHtml(opts: DashboardOptions): string {
       });
       if (res.ok) location.reload();
       else alert((await res.json()).error ?? 'no se pudo cambiar la base');
+    });
+  </script>`;
+}
+
+function sortSelectorHtml(sort: WorktreeSort): string {
+  const opt = (value: WorktreeSort, text: string) =>
+    `<option value="${value}"${value === sort ? ' selected' : ''}>${text}</option>`;
+  return `<label class="sortby">ordenar
+    <select id="sort-select">
+      ${opt('modified-desc', 'último commit ↓')}
+      ${opt('modified-asc', 'último commit ↑')}
+      ${opt('created-desc', 'creación ↓')}
+      ${opt('created-asc', 'creación ↑')}
+    </select>
+  </label>
+  <script>
+    document.getElementById('sort-select').addEventListener('change', async (e) => {
+      const res = await fetch('/api/sort', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sort: e.target.value }),
+      });
+      if (res.ok) location.reload();
+      else alert((await res.json()).error ?? 'no se pudo cambiar el orden');
     });
   </script>`;
 }
@@ -252,18 +332,28 @@ const CARD_ACTIONS_JS = `
       btn.disabled = true;
       btn.textContent = 'arrancando…';
       const { ok, data } = await postJson('/wt/' + wt + '/run/start');
-      if (!ok) {
-        alert(data?.error ?? 'no se pudo levantar');
-        location.reload();
-        return;
-      }
-      await pollUntilUrl(wt);
+      if (!ok) alert(data?.error ?? 'no se pudo levantar');
+      // recargar ya: la tarjeta pasa al estado "corriendo" (con Detener disponible);
+      // el handler de .esperando sigue sondeando hasta que aparezca la URL.
       location.reload();
     }
 
     if (btn.dataset.action === 'stop') {
       btn.disabled = true;
       await postJson('/wt/' + wt + '/run/stop');
+      location.reload();
+    }
+
+    if (btn.dataset.action === 'editor') {
+      btn.disabled = true;
+      const { ok, data } = await postJson('/wt/' + wt + '/open-editor');
+      btn.disabled = false;
+      if (!ok) alert(data?.error ?? 'no se pudo abrir VS Code');
+    }
+
+    if (btn.dataset.action === 'archive') {
+      btn.disabled = true;
+      await postJson('/wt/' + wt + '/archive', { archived: btn.dataset.archived !== 'true' });
       location.reload();
     }
 
@@ -328,7 +418,25 @@ const CARD_ACTIONS_JS = `
 </script>`;
 
 export function renderDashboardHtml(data: ReviewAggregate, opts: DashboardOptions): string {
-  const cards = data.worktrees.map((wt) => cardHtml(wt, opts.runCommand)).join('\n');
+  const now = data.generatedAt;
+  const active = sortWorktrees(
+    data.worktrees.filter((w) => !w.archived),
+    opts.sort,
+  );
+  const archived = sortWorktrees(
+    data.worktrees.filter((w) => w.archived),
+    opts.sort,
+  );
+  const cards = active.map((wt) => cardHtml(wt, opts.runCommand, now)).join('\n');
+  const archivedCards = archived.map((wt) => cardHtml(wt, opts.runCommand, now)).join('\n');
+  const archivedSection = archived.length
+    ? `<details class="archived">
+    <summary>Archivados (${archived.length})</summary>
+    <div class="grid">
+${archivedCards}
+    </div>
+  </details>`
+    : '';
   return `<!doctype html>
 <html lang="es">
 <head>
@@ -345,7 +453,8 @@ export function renderDashboardHtml(data: ReviewAggregate, opts: DashboardOption
   .top { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: .4rem; flex-wrap: wrap; }
   .controls { display: flex; align-items: center; gap: .8rem; }
   .base { font-size: .82rem; color: var(--muted); display: flex; align-items: center; gap: .45rem; }
-  .base select { background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 7px; padding: .35rem .5rem; font-size: .82rem; }
+  .base select, .sortby select { background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 7px; padding: .35rem .5rem; font-size: .82rem; }
+  .sortby { font-size: .82rem; color: var(--muted); display: flex; align-items: center; gap: .45rem; }
   #mode-toggle { display: flex; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; padding: 0; margin: 0; }
   #mode-toggle label { font-size: .78rem; color: var(--muted); padding: .38rem .7rem; cursor: pointer; }
   #mode-toggle label:has(input:checked) { background: var(--accent); color: #fff; }
@@ -361,7 +470,13 @@ export function renderDashboardHtml(data: ReviewAggregate, opts: DashboardOption
   .path { margin: 0; font-size: .74rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .path code { font-size: inherit; }
   .stats { margin: 0; font-size: .82rem; color: var(--muted); }
+  .wt-dates { margin: 0; font-size: .72rem; color: var(--muted); }
+  .wt-pr { margin: 0; }
+  .pr-link { font-size: .76rem; color: var(--accent); text-decoration: none; border: 1px solid var(--accent); border-radius: 99px; padding: .1rem .5rem; }
   .add { color: var(--green); } .del { color: var(--red); }
+  details.archived { margin-top: 1.5rem; border-top: 1px solid var(--border); padding-top: 1rem; }
+  details.archived > summary { cursor: pointer; color: var(--muted); font-size: .85rem; margin-bottom: 1rem; }
+  details.archived .card { opacity: .72; }
   .card footer { margin-top: auto; padding-top: .35rem; }
   .btn { display: inline-block; background: var(--accent); color: #fff; text-decoration: none; font-size: .82rem; padding: .42rem .9rem; border-radius: 7px; border: none; cursor: pointer; font-family: inherit; }
   .btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
@@ -398,6 +513,7 @@ export function renderDashboardHtml(data: ReviewAggregate, opts: DashboardOption
     <h1>🌳 worktrees-viewer</h1>
     <div class="controls">
       ${modeToggleHtml(opts.mode)}
+      ${sortSelectorHtml(opts.sort)}
       ${baseSelectorHtml(opts)}
       <a class="btn ghost" href="/">Refrescar</a>
     </div>
@@ -409,6 +525,7 @@ export function renderDashboardHtml(data: ReviewAggregate, opts: DashboardOption
   <div class="grid">
 ${cards}
   </div>
+  ${archivedSection}
   <div class="ai">
     <h3>Para agentes de IA</h3>
     <p>Todo el contenido agregado (todos los worktrees con sus diffs) está disponible en:</p>
