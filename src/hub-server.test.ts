@@ -939,3 +939,105 @@ describe('abrir en VS Code', () => {
     expect(html).not.toContain('vscode://');
   });
 });
+
+describe('worktree cuya carpeta ya no existe', () => {
+  // borrado a mano (rm -rf) en vez de `git worktree remove`: git lo marca prunable
+  let borrado: string;
+  // locked con la carpeta ausente (disco externo desmontado): git NO lo marca prunable
+  let desmontado: string;
+
+  beforeAll(() => {
+    borrado = path.join(fx.root, 'wt-borrado');
+    desmontado = path.join(fx.root, 'wt-desmontado');
+    execFileSync('git', ['worktree', 'add', '-b', 'feat-borrado', borrado, 'main'], { cwd: fx.repo, stdio: 'ignore' });
+    execFileSync('git', ['worktree', 'add', '--lock', '-b', 'feat-desmontado', desmontado, 'main'], {
+      cwd: fx.repo,
+      stdio: 'ignore',
+    });
+    fs.rmSync(borrado, { recursive: true, force: true });
+    fs.rmSync(desmontado, { recursive: true, force: true });
+  });
+
+  afterAll(() => {
+    execFileSync('git', ['worktree', 'unlock', desmontado], { cwd: fx.repo, stdio: 'ignore' });
+    execFileSync('git', ['worktree', 'prune'], { cwd: fx.repo, stdio: 'ignore' });
+  });
+
+  test.each(['/', '/api/worktrees.json', '/api/review.json', '/review.md'])('GET %s sigue respondiendo 200', async (url) => {
+    const res = await app.request(url);
+    expect(res.status).toBe(200);
+  });
+
+  test('no lista los worktrees sin carpeta y sí el resto', async () => {
+    const body = (await (await app.request('/api/worktrees.json')).json()) as {
+      worktrees: Array<{ branch: string | null }>;
+    };
+    const branches = body.worktrees.map((w) => w.branch);
+    expect(branches).not.toContain('feat-borrado');
+    expect(branches).not.toContain('feat-desmontado');
+    expect(branches).toContain('feat-a');
+  });
+
+  test('/wt/:id/open de un worktree sin carpeta responde 404 sin lanzar difit', async () => {
+    ensured.length = 0;
+    const res = await app.request('/wt/wt-borrado/open', { redirect: 'manual' });
+    expect(res.status).toBe(404);
+    expect(ensured).toHaveLength(0);
+  });
+});
+
+describe('peticiones desde otros sitios (CSRF / DNS rebinding)', () => {
+  // Petición "simple" (text/plain) que un navegador manda cross-site sin preflight.
+  function postRunCommand(url: string, origin: string): Promise<Response> {
+    return Promise.resolve(
+      app.request(url, {
+        method: 'POST',
+        headers: { origin, 'content-type': 'text/plain' },
+        body: JSON.stringify({ command: 'echo pwned' }),
+      }),
+    );
+  }
+
+  test.each([
+    ['otro sitio', 'https://evil.example'],
+    ['iframe sandbox (Origin: null)', 'null'],
+    ['otro puerto de localhost', 'http://localhost:3000'],
+  ])('rechaza un POST con Origin de %s y no guarda el comando', async (_caso, origin) => {
+    const before = readRepoRunCommand(fx.repo);
+    const res = await postRunCommand('/api/run-command', origin);
+    expect(res.status).toBe(403);
+    expect(readRepoRunCommand(fx.repo)).toBe(before);
+  });
+
+  test('acepta el POST del propio dashboard (Origin igual al host)', async () => {
+    const res = await postRunCommand('/api/run-command', 'http://localhost');
+    expect(res.status).toBe(200);
+    expect(readRepoRunCommand(fx.repo)).toBe('echo pwned');
+  });
+
+  test('rechaza un GET con Host de un dominio ajeno (DNS rebinding: leería los diffs)', async () => {
+    const res = await app.request('http://evil.example:4900/api/review.json');
+    expect(res.status).toBe(403);
+  });
+
+  test('rechaza un POST same-origin bajo un dominio rebindeado', async () => {
+    const before = readRepoRunCommand(fx.repo);
+    const res = await postRunCommand('http://evil.example:4900/api/run-command', 'http://evil.example:4900');
+    expect(res.status).toBe(403);
+    expect(readRepoRunCommand(fx.repo)).toBe(before);
+  });
+
+  test.each(['http://127.0.0.1:4900', 'http://localhost:4900', 'http://[::1]:4900', 'http://192.168.1.20:4900'])(
+    'acepta el Host %s (loopback o IP literal, p. ej. con --host 0.0.0.0)',
+    async (origin) => {
+      const res = await app.request(`${origin}/api/worktrees.json`);
+      expect(res.status).toBe(200);
+    },
+  );
+
+  test('acepta el hostname pasado con --host', async () => {
+    const hostApp = createHubApp({ repoRoot: fx.repo, host: 'devbox.local', difit: fakeDifit, run: fakeRun });
+    const res = await hostApp.request('http://devbox.local:4900/api/worktrees.json');
+    expect(res.status).toBe(200);
+  });
+});

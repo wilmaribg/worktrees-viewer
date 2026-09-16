@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { Command } from 'commander';
 import { DifitManager } from './difit-manager.js';
 import { tryGit } from './git.js';
@@ -6,6 +7,9 @@ import { openBrowser } from './open-browser.js';
 import { RunManager } from './run-manager.js';
 
 const DEFAULT_HUB_PORT = 4900;
+
+// package.json queda un nivel arriba tanto de src/ (tsx) como de dist/ (build publicado)
+const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
 
 interface CliOptions {
   port: string;
@@ -24,7 +28,7 @@ async function main(): Promise<void> {
     .option('-b, --base <branch>', 'rama base para los diffs (default: auto-detectada)')
     .option('--no-open', 'no abrir el navegador al arrancar')
     .option('--difit-args <args>', 'argumentos extra para las instancias de difit')
-    .version('0.1.0');
+    .version(version);
 
   program.parse();
   const opts = program.opts<CliOptions>();
@@ -41,7 +45,7 @@ async function main(): Promise<void> {
   const run = new RunManager();
 
   const server = startHub(
-    { repoRoot, base: opts.base, difit, run },
+    { repoRoot, base: opts.base, host: opts.host, difit, run },
     {
       port: Number(opts.port),
       host: opts.host,

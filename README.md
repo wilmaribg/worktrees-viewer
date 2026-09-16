@@ -105,6 +105,8 @@ Los diffs muy grandes se truncan (2 MB por worktree) y se marcan con `"truncated
 - Los servidores difit se lanzan de forma perezosa (al abrir un review) y mueren junto con el hub (Ctrl+C).
 - difit usa `git add --intent-to-add` para mostrar archivos untracked; lo deshace con `git reset -- <archivos>` (difit lo indica en su salida).
 - Requiere Node ≥ 20 y git.
+- **Seguridad**: el hub ejecuta comandos, así que solo acepta peticiones dirigidas a `localhost`, a una IP o al `--host` configurado (bloquea DNS rebinding), y rechaza los `POST` cuyo `Origin` no sea el propio hub (bloquea que otra página abierta en el navegador dispare acciones). Los clientes sin `Origin` (curl, agentes de IA) funcionan igual.
+- Los worktrees cuya carpeta ya no existe (borrada a mano o en un disco desmontado) no se muestran; `git worktree prune` los limpia del repo.
 
 ## Desarrollo
 
@@ -116,7 +118,7 @@ npm run build       # tsup → dist/
 npm run dev         # tsx src/cli.ts
 ```
 
-Arquitectura: `src/worktrees.ts` (enumeración), `src/git-summary.ts` (diff/resumen por worktree vía git), `src/worktree-dates.ts` (fechas de creación/último commit para ordenar), `src/difit-manager.ts` (ciclo de vida de los difit hijos), `src/run-manager.ts` (dev servers por worktree), `src/pr.ts` (push + gh pr create + lookup del PR), `src/editor.ts` (abrir el worktree en el editor por comando), `src/hub-server.ts` + `src/render.ts` (hub HTTP, dashboard y endpoints), `src/cli.ts` (entrada).
+Arquitectura: `src/worktrees.ts` (enumeración), `src/git-summary.ts` (diff/resumen por worktree vía git), `src/worktree-dates.ts` (fechas de creación/último commit para ordenar), `src/difit-manager.ts` (ciclo de vida de los difit hijos), `src/run-manager.ts` (dev servers por worktree), `src/pr.ts` (push + gh pr create + lookup del PR), `src/editor.ts` (abrir el worktree en el editor por comando), `src/hub-server.ts` + `src/render.ts` (hub HTTP, dashboard y endpoints), `src/request-guard.ts` (validación de Host y Origin), `src/cli.ts` (entrada).
 
 ## Licencia
 
