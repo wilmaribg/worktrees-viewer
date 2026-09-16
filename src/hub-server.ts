@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { serve, type ServerType } from '@hono/node-server';
 import { Hono } from 'hono';
 import {
@@ -24,6 +25,7 @@ import type { RunStatus } from './run-manager.js';
 import { detectBaseBranch, summarizeWorktree, type WorktreeSummary } from './git-summary.js';
 import { runGit, tryGit } from './git.js';
 import { renderDashboardHtml, renderReviewMarkdown } from './render.js';
+import { requestGuard } from './request-guard.js';
 import { worktreeDates } from './worktree-dates.js';
 import { listWorktrees, type Worktree } from './worktrees.js';
 
@@ -48,6 +50,8 @@ export interface HubContext {
   repoRoot: string;
   /** Override de rama base (flag --base). */
   base?: string;
+  /** Host donde escucha el hub (flag --host); se acepta como Host además de localhost e IPs. */
+  host?: string;
   difit: DifitLauncher;
   run: RunLauncher;
   /** Crea el PR (push + gh). Inyectable en tests; por defecto usa gh CLI. */
@@ -110,8 +114,7 @@ function resolveMode(ctx: HubContext, queryMode?: string): ReviewMode {
 }
 
 async function aggregate(ctx: HubContext, includeDiff: boolean, mode: ReviewMode): Promise<ReviewAggregate> {
-  const all = await listWorktrees(ctx.repoRoot);
-  const wts = all.filter((w) => !w.bare);
+  const wts = await usableWorktrees(ctx);
   wts.sort((a, b) => Number(b.isMain) - Number(a.isMain) || (a.branch ?? a.id).localeCompare(b.branch ?? b.id));
 
   const baseOverride = resolveBaseOverride(ctx);
@@ -166,6 +169,7 @@ async function resolvePr(ctx: HubContext, wt: Worktree): Promise<PrInfo | null> 
 
 export function createHubApp(ctx: HubContext): HubApp {
   const app = new Hono();
+  app.use('*', requestGuard(ctx.host));
 
   app.get('/', async (c) => {
     const mode = resolveMode(ctx, c.req.query('mode'));
@@ -372,9 +376,17 @@ export function createHubApp(ctx: HubContext): HubApp {
   return app;
 }
 
+/**
+ * Worktrees con los que se puede trabajar: sin bare ni carpetas que ya no existen
+ * (borradas a mano o en un disco desmontado; si están locked, git no las marca prunable).
+ */
+async function usableWorktrees(ctx: HubContext): Promise<Worktree[]> {
+  const all = await listWorktrees(ctx.repoRoot);
+  return all.filter((w) => !w.bare && fs.existsSync(w.path));
+}
+
 async function findWorktree(ctx: HubContext, id: string): Promise<Worktree | undefined> {
-  const wts = await listWorktrees(ctx.repoRoot);
-  return wts.find((w) => w.id === id && !w.bare);
+  return (await usableWorktrees(ctx)).find((w) => w.id === id);
 }
 
 function toRunInfo(status: RunStatus | null): WorktreeReview['run'] {

@@ -64,6 +64,21 @@ describe('wtv CLI end-to-end', { timeout: 60_000 }, () => {
     expect(md).toContain('# Revisión de worktrees');
   });
 
+  test('rechaza un Host ajeno (DNS rebinding) y un POST desde otro origen', async () => {
+    const { port } = new URL(hubUrl);
+    const rebinding = await rawRequest({ port, path: '/api/review.json', headers: { host: `evil.example:${port}` } });
+    expect(rebinding).toBe(403);
+
+    const csrf = await rawRequest({
+      port,
+      method: 'POST',
+      path: '/api/run-command',
+      headers: { origin: 'https://evil.example', 'content-type': 'text/plain' },
+      body: JSON.stringify({ command: 'echo pwned' }),
+    });
+    expect(csrf).toBe(403);
+  });
+
   test('/wt/:id/open lanza un difit real y redirige a él', async () => {
     const list = (await (await fetch(`${hubUrl}/api/worktrees.json`)).json()) as {
       worktrees: Array<{ id: string; branch: string | null }>;
@@ -107,6 +122,28 @@ describe('wtv CLI end-to-end', { timeout: 60_000 }, () => {
       .toBe('muerto');
   });
 });
+
+/** Petición HTTP cruda: fetch no deja fijar el header Host. Devuelve el status. */
+async function rawRequest(opts: {
+  port: string;
+  path: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+}): Promise<number> {
+  const http = await import('node:http');
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: '127.0.0.1', port: opts.port, path: opts.path, method: opts.method ?? 'GET', headers: opts.headers },
+      (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      },
+    );
+    req.on('error', reject);
+    req.end(opts.body);
+  });
+}
 
 async function pidListeningOn(port: number): Promise<number> {
   const { execFile } = await import('node:child_process');

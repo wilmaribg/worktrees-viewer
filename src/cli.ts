@@ -41,7 +41,7 @@ async function main(): Promise<void> {
   const run = new RunManager();
 
   const server = startHub(
-    { repoRoot, base: opts.base, difit, run },
+    { repoRoot, base: opts.base, host: opts.host, difit, run },
     {
       port: Number(opts.port),
       host: opts.host,
