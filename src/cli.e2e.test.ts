@@ -1,4 +1,5 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { createFixture, type Fixture } from './test-fixture.js';
@@ -120,6 +121,15 @@ describe('wtv CLI end-to-end', { timeout: 60_000 }, () => {
         { timeout: 10_000 },
       )
       .toBe('muerto');
+  });
+});
+
+describe('wtv --version', () => {
+  test('muestra la versión de package.json (no una fija en el código)', () => {
+    const pkgPath = path.join(import.meta.dirname, '..', 'package.json');
+    const { version } = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version: string };
+    const out = execFileSync(TSX, [CLI, '--version'], { encoding: 'utf8' });
+    expect(out.trim()).toBe(version);
   });
 });
 
